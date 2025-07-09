@@ -1,11 +1,9 @@
-// frontend/src/pages/SettingsPage.jsx
-
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useNotification } from '../contexts/NotificationContext';
 import { useTheme } from '../contexts/ThemeContext';
-import { getUserSettings, saveUserSettings } from '../services/firebaseService';
+import axios from 'axios';
 
 const SettingsPage = () => {
   const navigate = useNavigate();
@@ -14,46 +12,64 @@ const SettingsPage = () => {
   const { theme, setTheme } = useTheme();
   
   // Loading state
-  const [loading, setLoading] = useState(false);
-
-  // Settings state
-  const [notifications, setNotifications] = useState({
-    email: true,
-    push: false,
-    threadUpdates: true,
-    aiResponses: true,
-    mentions: true,
+  const [loading, setLoading] = useState({
+    load: false,
+    save: false
   });
 
+  // Preferences state
   const [preferences, setPreferences] = useState({
-    theme: 'light',
-    language: 'en',
-    autoSave: true,
-    compactMode: false,
+    notifications: {
+      email: true,
+      push: true,
+      mentions: true,
+      threadActivity: true,
+    },
+    theme: 'system',
+    ai: {
+      enabled: true,
+      responseStyle: 'adaptive',
+      autoRespond: true,
+    },
   });
 
-  // Load settings on component mount
+  // Load preferences on component mount
   useEffect(() => {
-    loadSettings();
-  }, []);
+    if (currentUser) {
+      loadPreferences();
+    }
+  }, [currentUser]);
 
   // Sync theme from context
   useEffect(() => {
-    setPreferences(prev => ({ ...prev, theme }));
+    if (preferences.theme !== theme) {
+      setPreferences(prev => ({
+        ...prev,
+        theme: theme
+      }));
+    }
   }, [theme]);
 
-  const loadSettings = () => {
+  const loadPreferences = async () => {
+    setLoading(prev => ({ ...prev, load: true }));
     try {
-      const settings = getUserSettings();
-      console.log('🔧 Loading settings:', settings);
-      setNotifications(settings.notifications);
-      setPreferences({
-        ...settings.preferences,
-        theme // Use current theme from context
+      const response = await axios.get('/api/users/preferences', {
+        headers: {
+          'Authorization': `Bearer ${await currentUser.getIdToken()}`
+        }
       });
+      
+      setPreferences(response.data.preferences);
+      
+      // Update theme context if needed
+      if (response.data.preferences.theme !== theme) {
+        setTheme(response.data.preferences.theme);
+      }
     } catch (error) {
-      console.error('Error loading settings:', error);
-      showError('Failed to load settings');
+      console.error('Error loading preferences:', error);
+      showError('Failed to load preferences');
+    } finally {
+      setLoading(prev => ({ ...prev, load: false }));
     }
   };
 
@@ -62,78 +78,63 @@ const SettingsPage = () => {
   };
 
   const handleNotificationChange = (key, value) => {
-    setNotifications(prev => {
-      const newNotifications = {
-        ...prev,
+    setPreferences(prev => ({
+      ...prev,
+      notifications: {
+        ...prev.notifications,
         [key]: value
-      };
-      
-      // Auto-save on change
-      if (preferences.autoSave) {
-        autoSaveSettings(newNotifications, preferences);
       }
-      
-      return newNotifications;
-    });
+    }));
   };
 
-  const handlePreferenceChange = (key, value) => {
-    setPreferences(prev => {
-      const newPreferences = {
-        ...prev,
-        [key]: value
-      };
-      
-      // Apply theme immediately when changed
-      if (key === 'theme') {
-        setTheme(value);
-      }
-      
-      // Auto-save on change
-      if (newPreferences.autoSave) {
-        autoSaveSettings(notifications, newPreferences);
-      }
-      
-      return newPreferences;
-    });
+  const handleThemeChange = (newTheme) => {
+    setPreferences(prev => ({
+      ...prev,
+      theme: newTheme
+    }));
+    
+    // Apply theme immediately
+    setTheme(newTheme);
   };
 
-  // Auto-save function
-  const autoSaveSettings = async (currentNotifications, currentPreferences) => {
-    try {
-      const settingsToSave = {
-        theme: currentPreferences.theme,
-        language: currentPreferences.language,
-        notifications: currentNotifications,
-        preferences: currentPreferences
-      };
-      
-      await saveUserSettings(settingsToSave);
-      console.log('🔧 Auto-saved settings');
-    } catch (error) {
-      console.error('Auto-save failed:', error);
-    }
+  const handleAiChange = (key, value) => {
+    setPreferences(prev => ({
+      ...prev,
+      ai: {
+        ...prev.ai,
+        [key]: value
+      }
+    }));
   };
 
   const handleSaveSettings = async () => {
-    setLoading(true);
+    setLoading(prev => ({ ...prev, save: true }));
     try {
-      const settingsToSave = {
-        theme: preferences.theme,
-        language: preferences.language,
-        notifications,
-        preferences
-      };
+      await axios.put('/api/users/preferences', preferences, {
+        headers: {
+          'Authorization': `Bearer ${await currentUser.getIdToken()}`
+        }
+      });
       
-      await saveUserSettings(settingsToSave);
       showSuccess('Settings saved successfully');
     } catch (error) {
       console.error('Error saving settings:', error);
-      showError('Failed to save settings: ' + error.message);
+      showError(error.response?.data?.error || 'Failed to save settings');
     } finally {
-      setLoading(false);
+      setLoading(prev => ({ ...prev, save: false }));
     }
   };
+
+  if (loading.load) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50/30 to-indigo-50/40 dark:from-slate-900 dark:via-slate-800 dark:to-slate-900 flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-12 h-12 border-4 border-blue-500/20 border-t-blue-500 rounded-full animate-spin mx-auto mb-4"></div>
+          <p className="text-slate-600 dark:text-slate-400">Loading preferences...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50/30 to-indigo-50/40 dark:from-slate-900 dark:via-slate-800 dark:to-slate-900">
@@ -197,7 +198,7 @@ const SettingsPage = () => {
                   <input
                     type="checkbox"
                     className="sr-only peer"
-                    checked={notifications.email}
+                    checked={preferences.notifications.email}
                     onChange={(e) => handleNotificationChange('email', e.target.checked)}
                   />
                   <div className="w-11 h-6 bg-slate-200 dark:bg-slate-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 dark:after:border-gray-600 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600 dark:peer-checked:bg-blue-600"></div>
@@ -214,42 +215,42 @@ const SettingsPage = () => {
                   <input
                     type="checkbox"
                     className="sr-only peer"
-                    checked={notifications.push}
+                    checked={preferences.notifications.push}
                     onChange={(e) => handleNotificationChange('push', e.target.checked)}
                   />
                   <div className="w-11 h-6 bg-slate-200 dark:bg-slate-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 dark:after:border-gray-600 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600 dark:peer-checked:bg-blue-600"></div>
                 </label>
               </div>
 
-              {/* Thread Updates */}
+              {/* Mention Notifications */}
               <div className="flex items-center justify-between">
                 <div>
-                  <h3 className="text-sm font-medium text-slate-900 dark:text-slate-100">Thread Updates</h3>
+                  <h3 className="text-sm font-medium text-slate-900 dark:text-slate-100">Mention Notifications</h3>
+                  <p className="text-sm text-slate-500 dark:text-slate-400">When someone mentions you in a thread</p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="sr-only peer"
+                    checked={preferences.notifications.mentions}
+                    onChange={(e) => handleNotificationChange('mentions', e.target.checked)}
+                  />
+                  <div className="w-11 h-6 bg-slate-200 dark:bg-slate-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 dark:after:border-gray-600 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600 dark:peer-checked:bg-blue-600"></div>
+                </label>
+              </div>
+
+              {/* Thread Activity Notifications */}
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-medium text-slate-900 dark:text-slate-100">Thread Activity</h3>
                   <p className="text-sm text-slate-500 dark:text-slate-400">New messages in threads you're participating in</p>
                 </div>
                 <label className="relative inline-flex items-center cursor-pointer">
                   <input
                     type="checkbox"
                     className="sr-only peer"
-                    checked={notifications.threadUpdates}
-                    onChange={(e) => handleNotificationChange('threadUpdates', e.target.checked)}
-                  />
-                  <div className="w-11 h-6 bg-slate-200 dark:bg-slate-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 dark:after:border-gray-600 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600 dark:peer-checked:bg-blue-600"></div>
-                </label>
-              </div>
-
-              {/* AI Responses */}
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-sm font-medium text-slate-900 dark:text-slate-100">AI Responses</h3>
-                  <p className="text-sm text-slate-500 dark:text-slate-400">When AI responds to your messages</p>
-                </div>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    className="sr-only peer"
-                    checked={notifications.aiResponses}
-                    onChange={(e) => handleNotificationChange('aiResponses', e.target.checked)}
+                    checked={preferences.notifications.threadActivity}
+                    onChange={(e) => handleNotificationChange('threadActivity', e.target.checked)}
                   />
                   <div className="w-11 h-6 bg-slate-200 dark:bg-slate-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 dark:after:border-gray-600 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600 dark:peer-checked:bg-blue-600"></div>
                 </label>
@@ -257,131 +258,115 @@ const SettingsPage = () => {
             </div>
           </div>
 
-          {/* Preferences */}
+          {/* Theme Preferences */}
           <div className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm rounded-3xl shadow-xl border border-white/20 dark:border-slate-700/20 overflow-hidden">
             <div className="px-8 py-6 border-b border-slate-200 dark:border-slate-700">
               <h2 className="text-xl font-semibold text-slate-900 dark:text-slate-100 flex items-center space-x-2">
-                <span>⚙️</span>
-                <span>Application Preferences</span>
+                <span>🎨</span>
+                <span>Appearance</span>
               </h2>
-              <p className="text-slate-600 dark:text-slate-400 mt-1">Customize how PeerGenius works for you</p>
+              <p className="text-slate-600 dark:text-slate-400 mt-1">Customize how PeerGenius looks</p>
             </div>
 
-            <div className="px-8 py-6 space-y-6">
+            <div className="px-8 py-6">
               {/* Theme Selection */}
               <div>
                 <h3 className="text-sm font-medium text-slate-900 dark:text-slate-100 mb-3">Theme</h3>
                 <div className="grid grid-cols-3 gap-3">
-                  {['light', 'dark', 'auto'].map((theme) => (
-                    <label key={theme} className="relative">
+                  {['light', 'dark', 'system'].map((themeOption) => (
+                    <label key={themeOption} className="relative">
                       <input
                         type="radio"
                         name="theme"
-                        value={theme}
-                        checked={preferences.theme === theme}
-                        onChange={(e) => handlePreferenceChange('theme', e.target.value)}
+                        value={themeOption}
+                        checked={preferences.theme === themeOption}
+                        onChange={(e) => handleThemeChange(e.target.value)}
                         className="sr-only peer"
                       />
                       <div className="flex items-center justify-center p-4 bg-slate-50 dark:bg-slate-700 border-2 border-slate-200 dark:border-slate-600 rounded-lg cursor-pointer peer-checked:bg-blue-50 dark:peer-checked:bg-blue-900 peer-checked:border-blue-500 dark:peer-checked:border-blue-400 transition-colors">
                         <span className="text-sm font-medium text-slate-700 dark:text-slate-300 peer-checked:text-blue-700 dark:peer-checked:text-blue-300 capitalize">
-                          {theme === 'auto' ? '🔄 Auto' : theme === 'light' ? '☀️ Light' : '🌙 Dark'}
+                          {themeOption === 'system' ? '🔄 System' : themeOption === 'light' ? '☀️ Light' : '🌙 Dark'}
                         </span>
                       </div>
                     </label>
                   ))}
                 </div>
               </div>
-
-              {/* Language Selection */}
-              <div>
-                <h3 className="text-sm font-medium text-slate-900 dark:text-slate-100 mb-3">Language</h3>
-                <select
-                  value={preferences.language}
-                  onChange={(e) => handlePreferenceChange('language', e.target.value)}
-                  className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-slate-900 dark:text-slate-100 transition-colors"
-                >
-                  <option value="en">🇺🇸 English</option>
-                  <option value="es">🇪🇸 Spanish</option>
-                  <option value="fr">🇫🇷 French</option>
-                  <option value="de">🇩🇪 German</option>
-                </select>
-              </div>
-
-              {/* Auto-save */}
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-sm font-medium text-slate-900 dark:text-slate-100">Auto-save</h3>
-                  <p className="text-sm text-slate-500 dark:text-slate-400">Automatically save your drafts</p>
-                </div>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    className="sr-only peer"
-                    checked={preferences.autoSave}
-                    onChange={(e) => handlePreferenceChange('autoSave', e.target.checked)}
-                  />
-                  <div className="w-11 h-6 bg-slate-200 dark:bg-slate-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 dark:after:border-gray-600 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600 dark:peer-checked:bg-blue-600"></div>
-                </label>
-              </div>
-
-              {/* Compact Mode */}
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-sm font-medium text-slate-900 dark:text-slate-100">Compact Mode</h3>
-                  <p className="text-sm text-slate-500 dark:text-slate-400">Use a denser layout to fit more content</p>
-                </div>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    className="sr-only peer"
-                    checked={preferences.compactMode}
-                    onChange={(e) => handlePreferenceChange('compactMode', e.target.checked)}
-                  />
-                  <div className="w-11 h-6 bg-slate-200 dark:bg-slate-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 dark:after:border-gray-600 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600 dark:peer-checked:bg-blue-600"></div>
-                </label>
-              </div>
             </div>
           </div>
 
-          {/* Account Security */}
+          {/* AI Settings */}
           <div className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm rounded-3xl shadow-xl border border-white/20 dark:border-slate-700/20 overflow-hidden">
             <div className="px-8 py-6 border-b border-slate-200 dark:border-slate-700">
               <h2 className="text-xl font-semibold text-slate-900 dark:text-slate-100 flex items-center space-x-2">
-                <span>🔒</span>
-                <span>Account Security</span>
+                <span>🤖</span>
+                <span>AI Assistant</span>
               </h2>
-              <p className="text-slate-600 dark:text-slate-400 mt-1">Manage your account security settings</p>
+              <p className="text-slate-600 dark:text-slate-400 mt-1">Configure your AI assistant preferences</p>
             </div>
 
-            <div className="px-8 py-6 space-y-4">
+            <div className="px-8 py-6 space-y-6">
+              {/* AI Enabled */}
               <div className="flex items-center justify-between">
                 <div>
-                  <h3 className="text-sm font-medium text-slate-900 dark:text-slate-100">Current Email</h3>
-                  <p className="text-sm text-slate-500 dark:text-slate-400">{currentUser?.email}</p>
+                  <h3 className="text-sm font-medium text-slate-900 dark:text-slate-100">AI Assistant</h3>
+                  <p className="text-sm text-slate-500 dark:text-slate-400">Enable AI-powered responses and assistance</p>
                 </div>
-                <button className="px-4 py-2 text-sm font-medium text-blue-600 hover:text-blue-700 hover:bg-blue-50 dark:hover:bg-blue-900 rounded-lg transition-colors">
-                  Change Email
-                </button>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="sr-only peer"
+                    checked={preferences.ai.enabled}
+                    onChange={(e) => handleAiChange('enabled', e.target.checked)}
+                  />
+                  <div className="w-11 h-6 bg-slate-200 dark:bg-slate-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 dark:after:border-gray-600 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600 dark:peer-checked:bg-blue-600"></div>
+                </label>
               </div>
 
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-sm font-medium text-slate-900 dark:text-slate-100">Password</h3>
-                  <p className="text-sm text-slate-500 dark:text-slate-400">Last updated: Not available</p>
+              {/* AI Response Style */}
+              <div className={`transition-opacity duration-200 ${preferences.ai.enabled ? 'opacity-100' : 'opacity-50'}`}>
+                <h3 className="text-sm font-medium text-slate-900 dark:text-slate-100 mb-3">Response Style</h3>
+                <div className="grid grid-cols-3 gap-3">
+                  {['concise', 'detailed', 'adaptive'].map((style) => (
+                    <label key={style} className="relative">
+                      <input
+                        type="radio"
+                        name="responseStyle"
+                        value={style}
+                        checked={preferences.ai.responseStyle === style}
+                        onChange={(e) => handleAiChange('responseStyle', e.target.value)}
+                        disabled={!preferences.ai.enabled}
+                        className="sr-only peer"
+                      />
+                      <div className="flex items-center justify-center p-3 bg-slate-50 dark:bg-slate-700 border-2 border-slate-200 dark:border-slate-600 rounded-lg cursor-pointer peer-checked:bg-blue-50 dark:peer-checked:bg-blue-900 peer-checked:border-blue-500 dark:peer-checked:border-blue-400 transition-colors peer-disabled:cursor-not-allowed peer-disabled:opacity-50">
+                        <span className="text-sm font-medium text-slate-700 dark:text-slate-300 peer-checked:text-blue-700 dark:peer-checked:text-blue-300 capitalize">
+                          {style === 'concise' ? '📝 Concise' : style === 'detailed' ? '📚 Detailed' : '🎯 Adaptive'}
+                        </span>
+                      </div>
+                    </label>
+                  ))}
                 </div>
-                <button className="px-4 py-2 text-sm font-medium text-blue-600 hover:text-blue-700 hover:bg-blue-50 dark:hover:bg-blue-900 rounded-lg transition-colors">
-                  Change Password
-                </button>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-2">
+                  Concise: Brief responses • Detailed: Comprehensive explanations • Adaptive: Adjusts to context
+                </p>
               </div>
 
+              {/* Auto-respond */}
               <div className="flex items-center justify-between">
                 <div>
-                  <h3 className="text-sm font-medium text-slate-900 dark:text-slate-100">Two-Factor Authentication</h3>
-                  <p className="text-sm text-slate-500 dark:text-slate-400">Add an extra layer of security</p>
+                  <h3 className="text-sm font-medium text-slate-900 dark:text-slate-100">Auto-respond</h3>
+                  <p className="text-sm text-slate-500 dark:text-slate-400">Automatically respond to academic questions</p>
                 </div>
-                <button className="px-4 py-2 text-sm font-medium text-slate-600 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 rounded-lg transition-colors">
-                  Enable 2FA
-                </button>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="sr-only peer"
+                    checked={preferences.ai.autoRespond}
+                    onChange={(e) => handleAiChange('autoRespond', e.target.checked)}
+                    disabled={!preferences.ai.enabled}
+                  />
+                  <div className="w-11 h-6 bg-slate-200 dark:bg-slate-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 dark:after:border-gray-600 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600 dark:peer-checked:bg-blue-600 peer-disabled:opacity-50"></div>
+                </label>
               </div>
             </div>
           </div>
@@ -390,13 +375,13 @@ const SettingsPage = () => {
           <div className="flex justify-end">
             <button
               onClick={handleSaveSettings}
-              disabled={loading}
+              disabled={loading.save}
               className="px-6 py-3 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white font-medium rounded-xl shadow-lg hover:shadow-xl transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2"
             >
-              {loading && (
+              {loading.save && (
                 <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
               )}
-              <span>{loading ? 'Saving...' : 'Save Settings'}</span>
+              <span>{loading.save ? 'Saving...' : 'Save Settings'}</span>
             </button>
           </div>
         </div>
@@ -404,7 +389,7 @@ const SettingsPage = () => {
         {/* Additional Info */}
         <div className="mt-8 text-center">
           <p className="text-sm text-slate-500 dark:text-slate-400">
-            Settings are automatically saved to your browser and synced across devices. Theme changes apply immediately.
+            Settings are saved to your account and synchronized across all your devices. Theme changes apply immediately.
           </p>
         </div>
       </main>

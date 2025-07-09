@@ -46,6 +46,86 @@ const validateUserSync = [
   handleValidationErrors
 ];
 
+// Profile validation rules
+const validateProfileUpdate = [
+  body('displayName')
+    .optional()
+    .trim()
+    .isLength({ min: 1, max: 100 })
+    .withMessage('Display name must be between 1 and 100 characters'),
+  body('bio')
+    .optional()
+    .trim()
+    .isLength({ max: 500 })
+    .withMessage('Bio must be 500 characters or less'),
+  body('university')
+    .optional()
+    .trim()
+    .isLength({ max: 100 })
+    .withMessage('University must be 100 characters or less'),
+  body('major')
+    .optional()
+    .trim()
+    .isLength({ max: 100 })
+    .withMessage('Major must be 100 characters or less'),
+  body('year')
+    .optional()
+    .isIn(['Freshman', 'Sophomore', 'Junior', 'Senior', 'Graduate', 'PhD', 'Other'])
+    .withMessage('Invalid year selection'),
+  body('interests')
+    .optional()
+    .isArray({ max: 10 })
+    .withMessage('Interests must be an array with maximum 10 items'),
+  body('interests.*')
+    .optional()
+    .trim()
+    .isLength({ min: 1, max: 50 })
+    .withMessage('Each interest must be between 1 and 50 characters'),
+  body('avatar')
+    .optional()
+    .trim()
+    .isURL()
+    .withMessage('Avatar must be a valid URL'),
+  handleValidationErrors
+];
+
+// Preferences validation rules
+const validatePreferencesUpdate = [
+  body('notifications.email')
+    .optional()
+    .isBoolean()
+    .withMessage('Email notification preference must be boolean'),
+  body('notifications.push')
+    .optional()
+    .isBoolean()
+    .withMessage('Push notification preference must be boolean'),
+  body('notifications.mentions')
+    .optional()
+    .isBoolean()
+    .withMessage('Mentions notification preference must be boolean'),
+  body('notifications.threadActivity')
+    .optional()
+    .isBoolean()
+    .withMessage('Thread activity notification preference must be boolean'),
+  body('theme')
+    .optional()
+    .isIn(['light', 'dark', 'system'])
+    .withMessage('Theme must be light, dark, or system'),
+  body('ai.enabled')
+    .optional()
+    .isBoolean()
+    .withMessage('AI enabled preference must be boolean'),
+  body('ai.responseStyle')
+    .optional()
+    .isIn(['concise', 'detailed', 'adaptive'])
+    .withMessage('AI response style must be concise, detailed, or adaptive'),
+  body('ai.autoRespond')
+    .optional()
+    .isBoolean()
+    .withMessage('AI auto-respond preference must be boolean'),
+  handleValidationErrors
+];
+
 // MongoDB ObjectId validation
 const validateObjectId = (paramName) => [
   param(paramName)
@@ -58,6 +138,8 @@ module.exports = {
   validateCreateThread,
   validateCreateMessage,
   validateUserSync,
+  validateProfileUpdate,
+  validatePreferencesUpdate,
   validateObjectId,
   handleValidationErrors
 };
