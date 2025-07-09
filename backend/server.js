@@ -11,6 +11,7 @@ const { Server } = require("socket.io");
 
 const userRoutes = require("./routes/userRoutes");
 const threadRoutes = require("./routes/threadRoutes");
+const threadCategoryRoutes = require("./routes/threadCategoryRoutes");
 const messageRoutes = require("./routes/messageRoutes");
 
 const app = express();
@@ -182,6 +183,7 @@ app.get("/api/health", (req, res) => res.json({ status: "OK", timestamp: new Dat
 // mount in this order:
 app.use("/api/users", apiLimiter, userRoutes);
 app.use("/api/threads", apiLimiter, threadRoutes);
+app.use("/api/thread-categories", apiLimiter, threadCategoryRoutes);
 app.use("/api/messages", messageRoutes); // AI limiter applied per endpoint in routes
 
 // Import error handlers

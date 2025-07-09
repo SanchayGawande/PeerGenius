@@ -18,6 +18,28 @@ const validateCreateThread = [
     .trim()
     .isLength({ min: 1, max: 200 })
     .withMessage('Title must be between 1 and 200 characters'),
+  body('description')
+    .optional()
+    .trim()
+    .isLength({ max: 1000 })
+    .withMessage('Description must be 1000 characters or less'),
+  body('category')
+    .optional()
+    .isMongoId()
+    .withMessage('Category must be a valid ID'),
+  body('tags')
+    .optional()
+    .isArray({ max: 10 })
+    .withMessage('Tags must be an array with maximum 10 items'),
+  body('tags.*')
+    .optional()
+    .trim()
+    .isLength({ min: 1, max: 30 })
+    .withMessage('Each tag must be between 1 and 30 characters'),
+  body('isPublic')
+    .optional()
+    .isBoolean()
+    .withMessage('isPublic must be boolean'),
   handleValidationErrors
 ];
 

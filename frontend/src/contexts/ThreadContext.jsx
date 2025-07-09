@@ -34,13 +34,15 @@ export const ThreadProvider = ({ children }) => {
   }, [logout]);
 
   // Create a new thread
-  const createThread = async (title, description = "", isPublic = false) => {
+  const createThread = async (title, description = "", isPublic = false, category = null, tags = []) => {
     setError(null);
     try {
       const response = await axios.post("/threads", { 
         title, 
         description,
-        isPublic 
+        isPublic,
+        category,
+        tags
       });
       const newThread = response.data;
       setThreads((prev) => [...prev, newThread]);
