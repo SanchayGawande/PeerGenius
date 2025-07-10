@@ -31,21 +31,38 @@ export const AuthProvider = ({ children }) => {
           localStorage.setItem("token", idToken);
           console.log("✅ Token obtained for:", firebaseUser.email);
           
-          // Set up token refresh
-          const refreshToken = async () => {
+          // Enhanced token refresh with retry logic
+          const refreshToken = async (retryCount = 0) => {
+            const maxRetries = 3;
             try {
+              console.log('🔄 Refreshing authentication token...');
               const newToken = await firebaseUser.getIdToken(true);
               setToken(newToken);
               localStorage.setItem("token", newToken);
+              console.log('✅ Token refreshed successfully');
+              
+              // Reset retry count on success
+              refreshToken.retryCount = 0;
             } catch (error) {
-              console.error("Token refresh failed:", error);
-              // If refresh fails, log user out
-              await logout();
+              console.error(`❌ Token refresh failed (attempt ${retryCount + 1}/${maxRetries}):`, error);
+              
+              // Retry with exponential backoff
+              if (retryCount < maxRetries) {
+                const delay = Math.pow(2, retryCount) * 1000; // 1s, 2s, 4s
+                console.log(`⏰ Retrying token refresh in ${delay}ms...`);
+                setTimeout(() => {
+                  refreshToken(retryCount + 1);
+                }, delay);
+              } else {
+                console.error('❌ Max token refresh retries reached, logging out user');
+                // If all retries fail, log user out
+                await logout();
+              }
             }
           };
 
-          // Refresh token every 50 minutes (tokens expire in 1 hour)
-          tokenRefreshInterval = setInterval(refreshToken, 50 * 60 * 1000);
+          // Refresh token every 45 minutes (tokens expire in 1 hour) - more conservative
+          tokenRefreshInterval = setInterval(refreshToken, 45 * 60 * 1000);
         } catch (error) {
           console.error("❌ Error getting token:", error);
           setUser(null);
@@ -71,17 +88,94 @@ export const AuthProvider = ({ children }) => {
   }, []); // Remove user dependency to prevent infinite re-renders
 
   const login = async (email, password) => {
-    const auth = getAuth();
-    const userCredential = await signInWithEmailAndPassword(auth, email, password);
-    await addUserToDB();
-    return userCredential;
+    try {
+      console.log('🔐 Attempting login for:', email);
+      const auth = getAuth();
+      const userCredential = await signInWithEmailAndPassword(auth, email, password);
+      console.log('✅ Firebase login successful for:', email);
+      
+      // Sync user to backend database
+      await addUserToDB();
+      console.log('✅ User synced to database');
+      
+      return userCredential;
+    } catch (error) {
+      console.error('❌ Login failed:', error);
+      
+      // Provide user-friendly error messages
+      let errorMessage = 'Login failed. Please try again.';
+      
+      switch (error.code) {
+        case 'auth/user-not-found':
+          errorMessage = 'No account found with this email address.';
+          break;
+        case 'auth/wrong-password':
+          errorMessage = 'Incorrect password. Please try again.';
+          break;
+        case 'auth/invalid-email':
+          errorMessage = 'Please enter a valid email address.';
+          break;
+        case 'auth/user-disabled':
+          errorMessage = 'This account has been disabled. Please contact support.';
+          break;
+        case 'auth/too-many-requests':
+          errorMessage = 'Too many failed attempts. Please try again later.';
+          break;
+        case 'auth/network-request-failed':
+          errorMessage = 'Network error. Please check your connection and try again.';
+          break;
+      }
+      
+      // Create enhanced error object
+      const enhancedError = new Error(errorMessage);
+      enhancedError.code = error.code;
+      enhancedError.originalError = error;
+      throw enhancedError;
+    }
   };
 
   const signup = async (email, password) => {
-    const auth = getAuth();
-    const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-    await addUserToDB();
-    return userCredential;
+    try {
+      console.log('📝 Attempting signup for:', email);
+      const auth = getAuth();
+      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+      console.log('✅ Firebase signup successful for:', email);
+      
+      // Sync user to backend database
+      await addUserToDB();
+      console.log('✅ New user synced to database');
+      
+      return userCredential;
+    } catch (error) {
+      console.error('❌ Signup failed:', error);
+      
+      // Provide user-friendly error messages
+      let errorMessage = 'Account creation failed. Please try again.';
+      
+      switch (error.code) {
+        case 'auth/email-already-in-use':
+          errorMessage = 'An account with this email already exists. Please sign in instead.';
+          break;
+        case 'auth/invalid-email':
+          errorMessage = 'Please enter a valid email address.';
+          break;
+        case 'auth/weak-password':
+          errorMessage = 'Password should be at least 6 characters long.';
+          break;
+        case 'auth/operation-not-allowed':
+          errorMessage = 'Email/password accounts are not enabled. Please contact support.';
+          break;
+        case 'auth/network-request-failed':
+          errorMessage = 'Network error. Please check your connection and try again.';
+          break;
+      }
+      
+      // Create enhanced error object
+      const enhancedError = new Error(errorMessage);
+      enhancedError.code = error.code;
+      enhancedError.originalError = error;
+      throw enhancedError;
+    }
   };
 
   const logout = async () => {

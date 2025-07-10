@@ -86,6 +86,18 @@ const UserAvatarDropdown = () => {
       case 'settings':
         navigate('/settings');
         break;
+      case 'ai-tutor':
+        navigate('/ai/tutor');
+        break;
+      case 'ai-analytics':
+        navigate('/ai/analytics');
+        break;
+      case 'ai-content':
+        navigate('/ai/content');
+        break;
+      case 'ai-assistance':
+        navigate('/ai/assistance');
+        break;
       case 'logout':
         logout();
         break;
@@ -189,6 +201,76 @@ const UserAvatarDropdown = () => {
               </span>
               <span className="text-sm font-medium text-gray-700 dark:text-gray-300 group-hover:text-gray-900 dark:group-hover:text-gray-100">
                 Settings
+              </span>
+            </button>
+
+            {/* Divider */}
+            <div className="my-2 border-t border-gray-100"></div>
+
+            {/* AI Features Section */}
+            <div className="px-4 py-2">
+              <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">
+                AI Features
+              </p>
+            </div>
+
+            {/* AI Tutor */}
+            <button
+              onClick={() => handleMenuAction('ai-tutor')}
+              onKeyDown={(e) => handleKeyDown(e, 'ai-tutor')}
+              className="w-full px-4 py-3 text-left flex items-center space-x-3 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors duration-150 group"
+              role="menuitem"
+            >
+              <span className="text-gray-400 dark:text-gray-500 group-hover:text-blue-600 dark:group-hover:text-blue-300 transition-colors">
+                🧠
+              </span>
+              <span className="text-sm font-medium text-gray-700 dark:text-gray-300 group-hover:text-blue-900 dark:group-hover:text-blue-100">
+                AI Tutor
+              </span>
+            </button>
+
+            {/* Analytics Dashboard */}
+            <button
+              onClick={() => handleMenuAction('ai-analytics')}
+              onKeyDown={(e) => handleKeyDown(e, 'ai-analytics')}
+              className="w-full px-4 py-3 text-left flex items-center space-x-3 hover:bg-purple-50 dark:hover:bg-purple-900/20 transition-colors duration-150 group"
+              role="menuitem"
+            >
+              <span className="text-gray-400 dark:text-gray-500 group-hover:text-purple-600 dark:group-hover:text-purple-300 transition-colors">
+                📊
+              </span>
+              <span className="text-sm font-medium text-gray-700 dark:text-gray-300 group-hover:text-purple-900 dark:group-hover:text-purple-100">
+                Analytics
+              </span>
+            </button>
+
+            {/* Content Generator */}
+            <button
+              onClick={() => handleMenuAction('ai-content')}
+              onKeyDown={(e) => handleKeyDown(e, 'ai-content')}
+              className="w-full px-4 py-3 text-left flex items-center space-x-3 hover:bg-green-50 dark:hover:bg-green-900/20 transition-colors duration-150 group"
+              role="menuitem"
+            >
+              <span className="text-gray-400 dark:text-gray-500 group-hover:text-green-600 dark:group-hover:text-green-300 transition-colors">
+                📝
+              </span>
+              <span className="text-sm font-medium text-gray-700 dark:text-gray-300 group-hover:text-green-900 dark:group-hover:text-green-100">
+                Content Generator
+              </span>
+            </button>
+
+            {/* Intelligent Assistance */}
+            <button
+              onClick={() => handleMenuAction('ai-assistance')}
+              onKeyDown={(e) => handleKeyDown(e, 'ai-assistance')}
+              className="w-full px-4 py-3 text-left flex items-center space-x-3 hover:bg-yellow-50 dark:hover:bg-yellow-900/20 transition-colors duration-150 group"
+              role="menuitem"
+            >
+              <span className="text-gray-400 dark:text-gray-500 group-hover:text-yellow-600 dark:group-hover:text-yellow-300 transition-colors">
+                🤖
+              </span>
+              <span className="text-sm font-medium text-gray-700 dark:text-gray-300 group-hover:text-yellow-900 dark:group-hover:text-yellow-100">
+                AI Assistance
               </span>
             </button>
 

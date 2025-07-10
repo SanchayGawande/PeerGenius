@@ -14,12 +14,25 @@ export const getErrorMessage = (error) => {
 };
 
 export const isNetworkError = (error) => {
-  return !error.response || error.code === 'NETWORK_ERROR';
+  return !error.response || error.code === 'NETWORK_ERROR' || error.code === 'ERR_NETWORK' || error.code === 'ERR_INSUFFICIENT_RESOURCES';
 };
 
 export const isAuthError = (error) => {
+  // CRITICAL FIX: Don't treat thread access errors as auth errors
+  if (error?.response?.status === 403) {
+    const errorType = error?.response?.data?.errorType;
+    const message = error?.response?.data?.message;
+    
+    // Check for specific thread access denial (not auth failure)
+    if (errorType === 'THREAD_ACCESS_DENIED' || 
+        message?.includes('Not authorized to view this thread') ||
+        message?.includes('Not authorized to post in this thread')) {
+      return false; // This is a permission error, not an auth failure
+    }
+  }
+  
   return error?.response?.status === 401 || 
-         error?.response?.status === 403 ||
+         (error?.response?.status === 403 && !error?.response?.data?.errorType) ||
          error?.code === 'auth/invalid-credential';
 };
 
@@ -34,7 +47,16 @@ export const isRateLimitError = (error) => {
 export const handleApiError = (error, context = '') => {
   console.error(`API Error ${context}:`, error);
   
+  // CRITICAL FIX: Handle client-side rate limiting
+  if (error.code === 'ERR_RATE_LIMITED') {
+    return 'Too many requests. Please wait a moment before trying again.';
+  }
+  
   if (isNetworkError(error)) {
+    // Provide more specific messages for network exhaustion
+    if (error.code === 'ERR_INSUFFICIENT_RESOURCES') {
+      return 'Network resources exhausted. Please refresh the page and try again.';
+    }
     return 'Network error. Please check your connection and try again.';
   }
   

@@ -7,7 +7,7 @@ async function fixThreads() {
     console.log('Connecting to MongoDB...');
     await mongoose.connect(process.env.MONGO_URI);
     
-    const Thread = require('../models/Thread');
+    const Thread = require('../models/thread');
     
     // Find all threads and check if creator is in participants
     const allThreads = await Thread.find({});

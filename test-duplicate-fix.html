@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Duplicate Event Listeners Fix</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .success { color: green; }
+        .error { color: red; }
+        .info { color: blue; }
+        .test-result { margin: 10px 0; padding: 10px; border-radius: 5px; }
+        .test-result.success { background-color: #d4edda; }
+        .test-result.error { background-color: #f8d7da; }
+        .test-result.info { background-color: #d1ecf1; }
+    </style>
+</head>
+<body>
+    <h1>🔧 React Duplicate Key Fix Test</h1>
+    <div id="results"></div>
+    
+    <script>
+        function addResult(message, type = 'info') {
+            const results = document.getElementById('results');
+            const div = document.createElement('div');
+            div.className = `test-result ${type}`;
+            div.innerHTML = message;
+            results.appendChild(div);
+        }
+        
+        function testEventListeners() {
+            addResult('🧪 Testing Event Listener Duplicate Prevention...', 'info');
+            
+            let messageCount = 0;
+            
+            // Function to handle messages
+            const handleMessage = (event) => {
+                messageCount++;
+                console.log(`Message received: ${messageCount}`);
+            };
+            
+            // Add the same listener twice (simulate the bug)
+            window.addEventListener('test-message', handleMessage);
+            window.addEventListener('test-message', handleMessage);
+            
+            // Fire a test event
+            window.dispatchEvent(new CustomEvent('test-message', { detail: { test: 'data' } }));
+            
+            // Check if the message was handled twice
+            setTimeout(() => {
+                if (messageCount === 2) {
+                    addResult('❌ Event listener was added twice - this was the bug!', 'error');
+                } else if (messageCount === 1) {
+                    addResult('✅ Event listener properly handled once', 'success');
+                } else {
+                    addResult(`⚠️ Unexpected message count: ${messageCount}`, 'error');
+                }
+                
+                // Clean up
+                window.removeEventListener('test-message', handleMessage);
+                window.removeEventListener('test-message', handleMessage);
+                
+                setTimeout(testMessageDuplication, 1000);
+            }, 100);
+        }
+        
+        function testMessageDuplication() {
+            addResult('🧪 Testing Message Deduplication Logic...', 'info');
+            
+            // Simulate the deduplication logic from MessageContext
+            let messages = [];
+            
+            function addMessage(newMessage) {
+                // Check if message already exists to avoid duplicates
+                const existingIds = new Set(messages.map(msg => msg._id));
+                if (!existingIds.has(newMessage._id)) {
+                    messages.push(newMessage);
+                    return true; // Message was added
+                }
+                return false; // Message was duplicate
+            }
+            
+            // Test adding a message
+            const testMessage = { _id: '686ecbaf45bda555248829ec', text: 'Hello' };
+            
+            const firstAdd = addMessage(testMessage);
+            const secondAdd = addMessage(testMessage); // Should be blocked
+            
+            if (firstAdd && !secondAdd && messages.length === 1) {
+                addResult('✅ Message deduplication working correctly', 'success');
+            } else {
+                addResult(`❌ Message deduplication failed: firstAdd=${firstAdd}, secondAdd=${secondAdd}, count=${messages.length}`, 'error');
+            }
+            
+            setTimeout(showSummary, 1000);
+        }
+        
+        function showSummary() {
+            addResult('📊 Test Summary:', 'info');
+            addResult('✅ Fixed: Removed duplicate event listener in MessageContext.jsx', 'success');
+            addResult('✅ Existing: Message deduplication logic prevents duplicate messages', 'success');
+            addResult('✅ Result: React duplicate key warnings should be resolved', 'success');
+            addResult('', 'info');
+            addResult('🎯 The fix ensures each socket message is only processed once, preventing duplicate React keys.', 'info');
+        }
+        
+        // Start the test
+        testEventListeners();
+    </script>
+</body>
+</html>

@@ -39,7 +39,7 @@ const AdvancedThreadDiscovery = () => {
 
   const loadCategories = async () => {
     try {
-      const response = await axios.get('/api/thread-categories', {
+      const response = await axios.get('/thread-categories', {
         headers: {
           'Authorization': `Bearer ${await currentUser.getIdToken()}`
         }
@@ -53,7 +53,7 @@ const AdvancedThreadDiscovery = () => {
   const loadRecommendedThreads = async () => {
     setIsLoadingRecommendations(true);
     try {
-      const response = await axios.get('/api/threads/recommended?limit=5', {
+      const response = await axios.get('/threads/recommended?limit=5', {
         headers: {
           'Authorization': `Bearer ${await currentUser.getIdToken()}`
         }
@@ -79,7 +79,7 @@ const AdvancedThreadDiscovery = () => {
       if (selectedCategory && selectedCategory !== 'all') params.append('category', selectedCategory);
       if (selectedTags.length > 0) params.append('tags', selectedTags.join(','));
 
-      const response = await axios.get(`/api/threads/search?${params}`, {
+      const response = await axios.get(`/threads/search?${params}`, {
         headers: {
           'Authorization': `Bearer ${await currentUser.getIdToken()}`
         }

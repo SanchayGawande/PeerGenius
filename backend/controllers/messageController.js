@@ -1,78 +1,173 @@
 const Message = require("../models/Message");
-const axios = require("axios");
 const { shouldAIRespond } = require("../utils/aiDecisionEngine");
+const groqService = require("../services/groqService");
+const path = require("path");
+const fs = require("fs");
+const { isImage, getFileCategory, formatFileSize } = require("../middleware/upload");
 
-// 🧠 Intelligent AI Response Logic - Context-Aware Decision Engine
-const determineAIResponseNeed = (thread, messageContent) => {
+// CRITICAL FIX: Enhanced AI Response Logic with Context Awareness
+const determineAIResponseNeed = async (thread, messageContent, messageHistory = []) => {
   const participantCount = thread.participants.length;
   
-  // Use the new intelligent decision engine
-  return shouldAIRespond(messageContent, participantCount);
+  // Build context for enhanced AI decision making
+  const contextOptions = {
+    threadHistory: messageHistory.slice(-10), // Last 10 messages for context
+    lastAIResponse: messageHistory.find(msg => msg.messageType === 'ai')?.createdAt || null,
+    threadType: thread.category?.name?.toLowerCase() || 'general',
+    userLearningLevel: 'intermediate', // Could be derived from user profile
+    isStudySession: thread.title?.toLowerCase().includes('study') || 
+                   thread.description?.toLowerCase().includes('study') ||
+                   thread.tags?.some(tag => ['study', 'learning', 'homework'].includes(tag.toLowerCase())) || false
+  };
+  
+  // Use the enhanced intelligent decision engine
+  const decision = shouldAIRespond(messageContent, participantCount, contextOptions);
+  
+  // Return both the boolean decision and the full context for response customization
+  return {
+    shouldRespond: typeof decision === 'boolean' ? decision : decision.shouldRespond,
+    context: typeof decision === 'object' ? decision : { 
+      reason: 'Legacy decision logic', 
+      responseType: 'general',
+      behaviorMode: participantCount === 1 ? 'personal_tutor' : 'collaborative_assistant'
+    }
+  };
 };
 
 // Get all messages for a thread
 const getMessages = async (req, res) => {
   const { threadId } = req.params;
-  const { since } = req.query; // For polling - get messages since timestamp
+  const { since, page = 1, limit = 50 } = req.query; // Enhanced with pagination
   const userId = req.user.uid;
   
   try {
-    // Verify user is participant in thread
-    const Thread = require("../models/Thread");
-    const thread = await Thread.findById(threadId);
-    if (!thread) {
-      return res.status(404).json({ message: "Thread not found" });
-    }
+    // CRITICAL FIX: Add retry logic for race condition between joinThread and getMessages
+    const maxRetries = 3;
+    const retryDelay = 500; // 500ms between retries
+    
+    let thread = null;
+    let isParticipant = false;
+    let attempt = 0;
+    
+    while (attempt < maxRetries && !isParticipant) {
+      attempt++;
+      
+      // Verify user is participant in thread
+      const Thread = require("../models/thread");
+      thread = await Thread.findById(threadId).populate('category');
+      if (!thread) {
+        return res.status(404).json({ message: "Thread not found" });
+      }
 
-    let isParticipant = thread.participants.some(p => p.userId === userId);
-    
-    // Auto-fix: If user is the creator but not in participants, add them
-    if (!isParticipant && thread.createdBy === userId) {
-      console.log(`Auto-fixing getMessages: Adding thread creator ${userId} (${req.user.email}) to participants`);
-      thread.participants.push({
-        userId,
-        email: req.user.email,
-        role: 'owner',
-        joinedAt: new Date()
-      });
-      await thread.save();
-      isParticipant = true;
-      console.log(`✅ Auto-fix successful: User added to thread ${threadId}`);
+      isParticipant = thread.participants.some(p => p.userId === userId);
+      
+      // Auto-fix: If user is the creator but not in participants, add them
+      if (!isParticipant && thread.createdBy === userId) {
+        console.log(`Auto-fixing getMessages: Adding thread creator ${userId} (${req.user.email}) to participants`);
+        thread.participants.push({
+          userId,
+          email: req.user.email,
+          role: 'owner',
+          joinedAt: new Date()
+        });
+        await thread.save();
+        isParticipant = true;
+        console.log(`✅ Auto-fix successful: User added to thread ${threadId}`);
+        break;
+      }
+      
+      // If not participant and not the last attempt, wait and retry
+      if (!isParticipant && attempt < maxRetries) {
+        console.log(`⏰ Attempt ${attempt}/${maxRetries}: User ${userId} not yet participant in thread ${threadId}, retrying in ${retryDelay}ms...`);
+        await new Promise(resolve => setTimeout(resolve, retryDelay));
+        continue;
+      }
+      
+      // If participant found, break out of retry loop
+      if (isParticipant) {
+        console.log(`✅ User ${userId} found as participant in thread ${threadId} on attempt ${attempt}`);
+        break;
+      }
     }
     
+    // Final authorization check after all retries
     if (!isParticipant) {
-      console.log(`403 Error: User ${userId} not participant in thread ${threadId}`);
+      console.log(`❌ 403 Error: User ${userId} not participant in thread ${threadId} after ${maxRetries} attempts`);
       console.log(`Thread participants:`, thread.participants.map(p => ({ userId: p.userId, email: p.email })));
+      console.log(`User details: userId=${userId}, email=${req.user.email}, isOwner=${thread.createdBy === userId}`);
+      
+      // CRITICAL FIX: Return more specific error that won't trigger logout
       return res.status(403).json({ 
         message: "Not authorized to view this thread",
         threadId,
         userId,
-        isOwner: thread.createdBy === userId
+        isOwner: thread.createdBy === userId,
+        errorType: 'THREAD_ACCESS_DENIED', // Specific error type to prevent logout
+        retryAfter: 1000, // Suggest retry after 1 second
+        suggestions: [
+          'You may need to join this thread first',
+          'The thread owner may need to add you as a participant',
+          'Try refreshing the page and joining again'
+        ]
       });
     }
 
-    // Build query for messages
-    let query = { threadId };
     if (since) {
-      query.createdAt = { $gt: new Date(since) };
-    }
+      // Polling mode - get messages since timestamp
+      const messages = await Message.find({ 
+        threadId, 
+        createdAt: { $gt: new Date(since) } 
+      }).sort({ createdAt: 1 });
 
-    const messages = await Message.find(query).sort({ createdAt: 1 });
-    
-    // Include thread info and participant list for context
-    const response = {
-      messages,
-      thread: {
-        id: thread._id,
-        title: thread.title,
-        description: thread.description,
-        participants: thread.participants,
-        messageCount: thread.messageCount,
-        lastActivity: thread.lastActivity
-      }
-    };
-    
-    res.json(response);
+      const response = {
+        messages,
+        thread: {
+          id: thread._id,
+          title: thread.title,
+          description: thread.description,
+          participants: thread.participants,
+          messageCount: thread.messageCount,
+          lastActivity: thread.lastActivity
+        }
+      };
+      
+      res.json(response);
+    } else {
+      // Pagination mode - get paginated messages
+      const skip = (page - 1) * limit;
+      const messages = await Message.find({ threadId })
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parseInt(limit));
+
+      // Get total count for pagination
+      const totalMessages = await Message.countDocuments({ threadId });
+      const totalPages = Math.ceil(totalMessages / limit);
+
+      // Reverse to get chronological order (oldest first)
+      const messagesInOrder = messages.reverse();
+
+      const response = {
+        messages: messagesInOrder,
+        thread: {
+          id: thread._id,
+          title: thread.title,
+          description: thread.description,
+          participants: thread.participants,
+          messageCount: thread.messageCount,
+          lastActivity: thread.lastActivity
+        },
+        pagination: {
+          currentPage: parseInt(page),
+          totalPages,
+          totalMessages,
+          hasNext: page < totalPages,
+          hasPrev: page > 1
+        }
+      };
+      
+      res.json(response);
+    }
   } catch (error) {
     console.error("Failed to retrieve messages:", error);
     res.status(500).json({ message: "Failed to retrieve messages", error: error.message });
@@ -90,8 +185,8 @@ const postMessage = async (req, res) => {
 
   try {
     // Verify user is participant in thread
-    const Thread = require("../models/Thread");
-    const thread = await Thread.findById(threadId);
+    const Thread = require("../models/thread");
+    const thread = await Thread.findById(threadId).populate('category');
     if (!thread) {
       return res.status(404).json({ message: "Thread not found" });
     }
@@ -130,20 +225,60 @@ const postMessage = async (req, res) => {
       $inc: { messageCount: 1 }
     });
 
-    // Check if AI should respond
-    const shouldAIRespond = determineAIResponseNeed(thread, content);
-    console.log(`🤖 AI Response Decision: ${shouldAIRespond ? 'YES' : 'NO'} for message: "${content.substring(0, 50)}..."`);
-
-    if (!shouldAIRespond) {
-      // Return only user message, no AI response
-      return res.status(201).json({ userMessage, aiMessage: null });
+    // CRITICAL FIX: Broadcast new message to all users in the thread room via Socket.IO
+    const io = req.app.get('io');
+    if (io) {
+      const messageData = {
+        message: {
+          _id: userMessage._id,
+          threadId: userMessage.threadId,
+          sender: userMessage.sender,
+          senderEmail: userMessage.senderEmail,
+          text: userMessage.text,
+          messageType: userMessage.messageType,
+          createdAt: userMessage.createdAt,
+          updatedAt: userMessage.updatedAt
+        },
+        threadId: threadId,
+        messageType: 'user'
+      };
+      
+      // CRITICAL FIX: Only broadcast to thread room, not globally
+      const roomName = `thread:${threadId}`;
+      io.to(roomName).emit('new-message', messageData);
+      
+      // Debug logging to verify room broadcasting
+      const room = io.sockets.adapter.rooms.get(roomName);
+      const clientCount = room ? room.size : 0;
+      console.log(`📡 Broadcasted user message to room "${roomName}" with ${clientCount} clients`);
+      
+      if (clientCount === 0) {
+        console.warn(`⚠️ No clients in room "${roomName}" - message may not be delivered!`);
+      }
     }
 
-    // Get conversation context for AI response (last 20 messages for context)
-    const messages = await Message.find({ threadId })
-      .sort({ createdAt: 1 })
+    // CRITICAL FIX: Get conversation context first for enhanced AI decision
+    const recentMessages = await Message.find({ threadId })
+      .sort({ createdAt: -1 })
       .limit(20)
       .populate('threadId', 'title description');
+    
+    // Check if AI should respond with enhanced context awareness
+    const aiDecision = await determineAIResponseNeed(thread, content, recentMessages);
+    console.log(`🤖 AI Response Decision: ${aiDecision.shouldRespond ? 'YES' : 'NO'} for message: "${content.substring(0, 50)}..."`); 
+    console.log(`🎯 AI Context: ${aiDecision.context.reason} | Mode: ${aiDecision.context.behaviorMode} | Type: ${aiDecision.context.responseType}`);
+
+    if (!aiDecision.shouldRespond) {
+      // Return only user message, no AI response
+      return res.status(201).json({ 
+        userMessage, 
+        aiMessage: null,
+        aiContext: aiDecision.context 
+      });
+    }
+
+    // Use recent messages for AI response (reverse to chronological order)
+    const messages = recentMessages.reverse();
 
     // Build conversation context with proper formatting
     const conversationHistory = messages.map(msg => {
@@ -155,43 +290,27 @@ const postMessage = async (req, res) => {
       };
     });
 
-    // Generate AI response using Groq with proper conversation format
+    // Enhanced AI response generation with improved error handling
     try {
-      const groqResponse = await axios.post(
-        "https://api.groq.com/openai/v1/chat/completions",
-        {
-          model: "llama3-8b-8192",
-          messages: [
-            {
-              role: "system",
-              content: `You are PeerGenius AI, a helpful educational assistant for students in collaborative study groups. 
-              
-              Guidelines:
-              - Provide clear, educational answers that help students learn
-              - Reference the conversation context when relevant
-              - Keep responses concise but informative (max 300 words)
-              - Encourage collaborative learning and discussion
-              - If multiple students are discussing, acknowledge different perspectives
-              - Be encouraging and supportive of the learning process
-              
-              Thread: "${thread.title}"
-              ${thread.description ? `Description: "${thread.description}"` : ''}
-              Participants: ${thread.participants.length} students`
-            },
-            ...conversationHistory,
-          ],
-          max_tokens: 400,
-          temperature: 0.7,
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
-            "Content-Type": "application/json",
-          },
+      const systemPrompt = generateContextAwareSystemPrompt(thread, aiDecision.context);
+      
+      console.log(`🤖 Generating AI response for thread ${threadId} with context: ${aiDecision.context.behaviorMode}`);
+      
+      const aiResponseData = await groqService.generateResponse({
+        messages: conversationHistory,
+        model: "llama3-8b-8192",
+        maxTokens: getContextAwareTokenLimit(aiDecision.context),
+        temperature: getContextAwareTemperature(aiDecision.context),
+        systemPrompt: systemPrompt,
+        context: {
+          threadId: threadId,
+          behaviorMode: aiDecision.context.behaviorMode,
+          responseType: aiDecision.context.responseType,
+          safetyMode: true // Enable safety measures
         }
-      );
+      });
 
-      const aiResponse = groqResponse.data.choices[0].message.content;
+      const aiResponse = aiResponseData.content;
 
       // Save AI response
       const aiMessage = await Message.create({
@@ -208,8 +327,43 @@ const postMessage = async (req, res) => {
         $inc: { messageCount: 1 }
       });
 
-      // Return both user message and AI response
-      res.status(201).json({ userMessage, aiMessage });
+      // CRITICAL FIX: Broadcast AI message to all users in the thread room via Socket.IO
+      if (io) {
+        const aiMessageData = {
+          message: {
+            _id: aiMessage._id,
+            threadId: aiMessage.threadId,
+            sender: aiMessage.sender,
+            senderEmail: aiMessage.senderEmail,
+            text: aiMessage.text,
+            messageType: aiMessage.messageType,
+            createdAt: aiMessage.createdAt,
+            updatedAt: aiMessage.updatedAt
+          },
+          threadId: threadId,
+          messageType: 'ai'
+        };
+        
+        // CRITICAL FIX: Only broadcast to thread room, not globally
+        const roomName = `thread:${threadId}`;
+        io.to(roomName).emit('new-message', aiMessageData);
+        
+        // Debug logging to verify room broadcasting
+        const room = io.sockets.adapter.rooms.get(roomName);
+        const clientCount = room ? room.size : 0;
+        console.log(`📡 Broadcasted AI message to room "${roomName}" with ${clientCount} clients`);
+        
+        if (clientCount === 0) {
+          console.warn(`⚠️ No clients in room "${roomName}" - AI message may not be delivered!`);
+        }
+      }
+
+      // Return both user message and AI response with context
+      res.status(201).json({ 
+        userMessage, 
+        aiMessage,
+        aiContext: aiDecision.context 
+      });
     } catch (aiError) {
       console.error("AI response failed:", aiError);
       // Return user message even if AI fails
@@ -228,8 +382,8 @@ const summarizeThread = async (req, res) => {
 
   try {
     // Verify user is participant in thread
-    const Thread = require("../models/Thread");
-    const thread = await Thread.findById(threadId);
+    const Thread = require("../models/thread");
+    const thread = await Thread.findById(threadId).populate('category');
     if (!thread) {
       return res.status(404).json({ message: "Thread not found" });
     }
@@ -253,32 +407,25 @@ const summarizeThread = async (req, res) => {
       })
       .join("\n");
 
-    const groqResponse = await axios.post(
-      "https://api.groq.com/openai/v1/chat/completions",
-      {
-        model: "llama3-8b-8192",
-        messages: [
-          {
-            role: "system",
-            content: "You are PeerGenius AI, a helpful educational assistant. Create a concise, well-structured summary of the conversation that highlights key learning points, questions discussed, and important insights. Format your response as bullet points for easy reading.",
-          },
-          {
-            role: "user",
-            content: `Please summarize the following educational discussion thread titled "${thread.title}":\n\n${context}`,
-          },
-        ],
-        max_tokens: 500,
-        temperature: 0.7,
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
-          "Content-Type": "application/json",
-        },
+    const aiResponseData = await groqService.generateResponse({
+      messages: [
+        {
+          role: "user",
+          content: `Please summarize the following educational discussion thread titled "${thread.title}":\n\n${context}`,
+        }
+      ],
+      model: "llama3-8b-8192",
+      maxTokens: 500,
+      temperature: 0.7,
+      systemPrompt: "You are PeerGenius AI, a helpful educational assistant. Create a concise, well-structured summary of the conversation that highlights key learning points, questions discussed, and important insights. Format your response as bullet points for easy reading.",
+      context: {
+        threadId: threadId,
+        responseType: 'summary',
+        safetyMode: true
       }
-    );
+    });
 
-    const aiSummary = groqResponse.data.choices[0].message.content;
+    const aiSummary = aiResponseData.content;
 
     // Create summary message with proper schema
     const summaryMessage = await Message.create({
@@ -333,4 +480,448 @@ const getMessageStats = async (req, res) => {
   }
 };
 
-module.exports = { getMessages, postMessage, summarizeThread, getMessageStats };
+// Add reaction to a message
+const addReaction = async (req, res) => {
+  const { messageId } = req.params;
+  const { emoji } = req.body;
+  const userId = req.user.uid;
+  const userEmail = req.user.email;
+
+  try {
+    const message = await Message.findById(messageId);
+    if (!message) {
+      return res.status(404).json({ message: "Message not found" });
+    }
+
+    // Check if user is participant in the thread
+    const Thread = require("../models/thread");
+    const thread = await Thread.findById(message.threadId);
+    if (!thread) {
+      return res.status(404).json({ message: "Thread not found" });
+    }
+
+    const isParticipant = thread.participants.some(p => p.userId === userId);
+    if (!isParticipant) {
+      return res.status(403).json({ message: "Not authorized to react to this message" });
+    }
+
+    // Find existing reaction for this emoji
+    let existingReaction = message.reactions.find(r => r.emoji === emoji);
+    
+    if (existingReaction) {
+      // Check if user already reacted with this emoji
+      const userReactionIndex = existingReaction.users.findIndex(u => u.userId === userId);
+      
+      if (userReactionIndex >= 0) {
+        // Remove user's reaction
+        existingReaction.users.splice(userReactionIndex, 1);
+        existingReaction.count = existingReaction.users.length;
+        
+        // Remove reaction if no users left
+        if (existingReaction.count === 0) {
+          message.reactions = message.reactions.filter(r => r.emoji !== emoji);
+        }
+      } else {
+        // Add user's reaction
+        existingReaction.users.push({ userId, email: userEmail });
+        existingReaction.count = existingReaction.users.length;
+      }
+    } else {
+      // Create new reaction
+      message.reactions.push({
+        emoji,
+        users: [{ userId, email: userEmail }],
+        count: 1
+      });
+    }
+
+    await message.save();
+
+    // Broadcast reaction update to all users in the thread room
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`thread:${message.threadId}`).emit('message-reaction', {
+        messageId: message._id,
+        reactions: message.reactions,
+        threadId: message.threadId
+      });
+      console.log(`📡 Broadcasted reaction update for message ${messageId}`);
+    }
+
+    res.json({ reactions: message.reactions });
+  } catch (error) {
+    console.error("Reaction failed:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// Upload files with message
+const uploadFiles = async (req, res) => {
+  const { threadId } = req.params;
+  const { content = "" } = req.body;
+  const files = req.files;
+
+  const user = req.user;
+  const senderName = user?.email || "Anonymous";
+  const senderId = user?.uid;
+
+  try {
+    // Verify user is participant in thread
+    const Thread = require("../models/thread");
+    const thread = await Thread.findById(threadId).populate('category');
+    if (!thread) {
+      return res.status(404).json({ message: "Thread not found" });
+    }
+
+    let isParticipant = thread.participants.some(p => p.userId === senderId);
+    
+    // Auto-fix: If user is the creator but not in participants, add them
+    if (!isParticipant && thread.createdBy === senderId) {
+      console.log(`Auto-fixing uploadFiles: Adding thread creator ${senderId} to participants`);
+      thread.participants.push({
+        userId: senderId,
+        email: senderName,
+        role: 'owner',
+        joinedAt: new Date()
+      });
+      await thread.save();
+      isParticipant = true;
+    }
+    
+    if (!isParticipant) {
+      return res.status(403).json({ message: "Not authorized to upload files to this thread" });
+    }
+
+    // Validate that we have files or content
+    if (!files || files.length === 0) {
+      if (!content.trim()) {
+        return res.status(400).json({ message: "Either files or message content is required" });
+      }
+    }
+
+    // Process uploaded files
+    const attachments = [];
+    if (files && files.length > 0) {
+      for (const file of files) {
+        const attachment = {
+          fileName: file.filename,
+          originalName: file.originalname,
+          fileType: file.mimetype,
+          fileSize: file.size,
+          filePath: file.path,
+          isImage: isImage(file.mimetype),
+          uploadedAt: new Date()
+        };
+        attachments.push(attachment);
+      }
+    }
+
+    // Create message with attachments
+    const message = await Message.create({
+      threadId,
+      sender: senderId,
+      senderEmail: senderName,
+      text: content.trim() || (attachments.length > 0 ? `Shared ${attachments.length} file(s)` : ""),
+      messageType: 'user',
+      attachments: attachments
+    });
+
+    // Update thread activity and message count
+    await Thread.findByIdAndUpdate(threadId, {
+      lastActivity: new Date(),
+      $inc: { messageCount: 1 }
+    });
+
+    // Broadcast new message to all users in the thread room via Socket.IO
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`thread:${threadId}`).emit('new-message', {
+        message: message,
+        threadId: threadId
+      });
+      console.log(`📡 Broadcasted file message to thread:${threadId}`);
+    }
+
+    res.status(201).json({ 
+      message: "Files uploaded successfully", 
+      data: message,
+      attachments: attachments.length 
+    });
+
+  } catch (error) {
+    console.error("File upload failed:", error);
+    
+    // Clean up uploaded files if database save failed
+    if (files && files.length > 0) {
+      files.forEach(file => {
+        if (fs.existsSync(file.path)) {
+          fs.unlinkSync(file.path);
+        }
+      });
+    }
+    
+    res.status(500).json({ message: "File upload failed" });
+  }
+};
+
+// Download/serve uploaded files
+const downloadFile = async (req, res) => {
+  const { messageId, fileName } = req.params;
+  const userId = req.user.uid;
+
+  try {
+    // Find the message
+    const message = await Message.findById(messageId);
+    if (!message) {
+      return res.status(404).json({ message: "Message not found" });
+    }
+
+    // Verify user is participant in thread
+    const Thread = require("../models/thread");
+    const thread = await Thread.findById(message.threadId);
+    if (!thread) {
+      return res.status(404).json({ message: "Thread not found" });
+    }
+
+    const isParticipant = thread.participants.some(p => p.userId === userId);
+    if (!isParticipant) {
+      return res.status(403).json({ message: "Not authorized to download this file" });
+    }
+
+    // Find the attachment
+    const attachment = message.attachments.find(att => att.fileName === fileName);
+    if (!attachment) {
+      return res.status(404).json({ message: "File not found" });
+    }
+
+    // Check if file exists
+    if (!fs.existsSync(attachment.filePath)) {
+      return res.status(404).json({ message: "File no longer exists" });
+    }
+
+    // Set appropriate headers
+    res.setHeader('Content-Type', attachment.fileType);
+    res.setHeader('Content-Disposition', `attachment; filename="${attachment.originalName}"`);
+    res.setHeader('Content-Length', attachment.fileSize);
+
+    // Stream the file
+    const fileStream = fs.createReadStream(attachment.filePath);
+    fileStream.pipe(res);
+
+  } catch (error) {
+    console.error("File download failed:", error);
+    res.status(500).json({ message: "File download failed" });
+  }
+};
+
+// Search messages within a thread
+const searchMessages = async (req, res) => {
+  const { threadId } = req.params;
+  const { 
+    query, 
+    page = 1, 
+    limit = 20,
+    messageType,
+    dateFrom,
+    dateTo,
+    authorId
+  } = req.query;
+  
+  const userId = req.user.uid;
+
+  try {
+    // Verify user is participant in thread
+    const Thread = require("../models/thread");
+    const thread = await Thread.findById(threadId).populate('category');
+    if (!thread) {
+      return res.status(404).json({ message: "Thread not found" });
+    }
+
+    const isParticipant = thread.participants.some(p => p.userId === userId);
+    if (!isParticipant) {
+      return res.status(403).json({ message: "Not authorized to search messages in this thread" });
+    }
+
+    // Build search filter
+    const filter = { threadId };
+    
+    // Text search
+    if (query && query.trim()) {
+      filter.text = { $regex: query.trim(), $options: 'i' };
+    }
+
+    // Message type filter
+    if (messageType) {
+      filter.messageType = messageType;
+    }
+
+    // Author filter
+    if (authorId) {
+      filter.sender = authorId;
+    }
+
+    // Date range filter
+    if (dateFrom || dateTo) {
+      filter.createdAt = {};
+      if (dateFrom) filter.createdAt.$gte = new Date(dateFrom);
+      if (dateTo) filter.createdAt.$lte = new Date(dateTo);
+    }
+
+    // Execute search with pagination
+    const skip = (page - 1) * limit;
+    const messages = await Message.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    // Get total count for pagination
+    const totalMessages = await Message.countDocuments(filter);
+    const totalPages = Math.ceil(totalMessages / limit);
+
+    res.json({
+      messages,
+      pagination: {
+        currentPage: parseInt(page),
+        totalPages,
+        totalMessages,
+        hasNext: page < totalPages,
+        hasPrev: page > 1
+      },
+      searchQuery: query,
+      filters: { messageType, dateFrom, dateTo, authorId }
+    });
+
+  } catch (error) {
+    console.error("Message search failed:", error);
+    res.status(500).json({ message: "Search failed" });
+  }
+};
+
+// CRITICAL FIX: Context-aware AI response customization helpers
+function generateContextAwareSystemPrompt(thread, aiContext) {
+  const participantCount = thread.participants.length;
+  const { behaviorMode, responseType } = aiContext;
+  
+  let basePrompt = `You are PeerGenius AI, an intelligent educational assistant designed to help students learn effectively.`;
+  
+  // Customize prompt based on behavior mode
+  switch (behaviorMode) {
+    case 'personal_tutor':
+      basePrompt += `\n\nPERSONAL TUTORING MODE:
+      - You are in one-on-one tutoring with a student
+      - Be patient, encouraging, and thorough in explanations
+      - Ask follow-up questions to ensure understanding
+      - Provide step-by-step guidance when needed
+      - Adapt your teaching style to the student's responses`;
+      break;
+      
+    case 'collaborative_assistant':
+      basePrompt += `\n\nCOLLABORATIVE MODE:
+      - You are assisting a group of ${participantCount} students
+      - Facilitate productive discussion and learning
+      - Encourage peer-to-peer learning when appropriate
+      - Provide guidance without dominating the conversation
+      - Acknowledge different perspectives when multiple students participate`;
+      break;
+      
+    case 'facilitating_tutor':
+      basePrompt += `\n\nFACILITATING MODE:
+      - Guide group learning and problem-solving
+      - Ask questions that encourage critical thinking
+      - Help students build on each other's ideas
+      - Provide hints rather than direct answers when possible`;
+      break;
+      
+    case 'expert_consultant':
+      basePrompt += `\n\nEXPERT MODE:
+      - Provide authoritative technical or academic assistance
+      - Focus on accuracy and detailed explanations
+      - Reference relevant concepts and principles
+      - Suggest best practices and additional resources`;
+      break;
+      
+    default:
+      basePrompt += `\n\nSTANDARD MODE:
+      - Provide helpful, educational responses
+      - Encourage learning and academic growth
+      - Be supportive and constructive`;
+  }
+  
+  // Add response type specific guidance
+  switch (responseType) {
+    case 'tutoring':
+      basePrompt += `\n\nFocus on teaching and explaining concepts clearly.`;
+      break;
+    case 'technical_assistance':
+      basePrompt += `\n\nProvide precise technical help with detailed solutions.`;
+      break;
+    case 'educational':
+      basePrompt += `\n\nEmphasize learning outcomes and conceptual understanding.`;
+      break;
+  }
+  
+  basePrompt += `\n\nThread Context:
+  - Title: "${thread.title}"
+  ${thread.description ? `- Description: "${thread.description}"` : ''}
+  - Participants: ${participantCount} ${participantCount === 1 ? 'student' : 'students'}
+  
+  Guidelines:
+  - Keep responses concise but informative (aim for 200-400 words)
+  - Use clear, accessible language appropriate for students
+  - Encourage active learning and critical thinking
+  - Be supportive and constructive in all interactions`;
+  
+  return basePrompt;
+}
+
+function getContextAwareTokenLimit(aiContext) {
+  const { responseType, behaviorMode } = aiContext;
+  
+  // Adjust token limits based on context
+  if (responseType === 'technical_assistance' || behaviorMode === 'expert_consultant') {
+    return 600; // More detailed technical responses
+  }
+  
+  if (behaviorMode === 'personal_tutor') {
+    return 500; // Thorough explanations for individual students
+  }
+  
+  if (behaviorMode === 'collaborative_assistant' || behaviorMode === 'facilitating_tutor') {
+    return 350; // Concise to not dominate group conversations
+  }
+  
+  return 400; // Default
+}
+
+function getContextAwareTemperature(aiContext) {
+  const { responseType, behaviorMode } = aiContext;
+  
+  // Adjust creativity/consistency based on context
+  if (responseType === 'technical_assistance' || behaviorMode === 'expert_consultant') {
+    return 0.3; // More consistent, factual responses
+  }
+  
+  if (behaviorMode === 'personal_tutor') {
+    return 0.7; // More engaging and adaptive
+  }
+  
+  if (behaviorMode === 'facilitating_tutor') {
+    return 0.8; // More creative in asking questions and facilitating
+  }
+  
+  return 0.6; // Default balanced approach
+}
+
+module.exports = { 
+  getMessages, 
+  postMessage, 
+  summarizeThread, 
+  getMessageStats, 
+  addReaction, 
+  uploadFiles, 
+  downloadFile, 
+  searchMessages,
+  generateContextAwareSystemPrompt,
+  getContextAwareTokenLimit,
+  getContextAwareTemperature
+};

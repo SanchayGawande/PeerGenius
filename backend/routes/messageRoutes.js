@@ -6,9 +6,14 @@ const {
   postMessage,
   summarizeThread,
   getMessageStats,
+  addReaction,
+  uploadFiles,
+  downloadFile,
+  searchMessages,
 } = require("../controllers/messageController");
 const verifyToken = require("../middleware/authMiddleware");
 const { validateCreateMessage, validateObjectId } = require("../middleware/validation");
+const { upload } = require("../middleware/upload");
 
 // AI-specific rate limiting
 const aiLimiter = rateLimit({
@@ -30,7 +35,11 @@ const messageLimiter = rateLimit({
 
 router.get("/stats", verifyToken, getMessageStats);
 router.get("/:threadId", verifyToken, validateObjectId('threadId'), getMessages);
+router.get("/:threadId/search", verifyToken, validateObjectId('threadId'), searchMessages);
 router.post("/:threadId", verifyToken, validateCreateMessage, messageLimiter, postMessage);
 router.post("/:threadId/summarize", verifyToken, validateObjectId('threadId'), aiLimiter, summarizeThread);
+router.post("/:messageId/react", verifyToken, validateObjectId('messageId'), addReaction);
+router.post("/:threadId/upload", verifyToken, validateObjectId('threadId'), upload.array('files', 5), uploadFiles);
+router.get("/:messageId/download/:fileName", verifyToken, validateObjectId('messageId'), downloadFile);
 
 module.exports = router;

@@ -11,6 +11,10 @@ import DiscoverThreads from "../components/DiscoverThreads";
 import MessageItem from "../components/MessageItem";
 import TypingIndicator from "../components/TypingIndicator";
 import UserTypingIndicator from "../components/UserTypingIndicator";
+import OnlineUsersIndicator from "../components/OnlineUsersIndicator";
+import FileUpload from "../components/FileUpload";
+import WhiteboardManager from "../components/WhiteboardManager";
+import MessageSearch from "../components/MessageSearch";
 import DebugPanel from "../components/DebugPanel";
 import UserAvatarDropdown from "../components/UserAvatarDropdown";
 
@@ -30,9 +34,11 @@ export default function ChatPage() {
     isPolling,
     isRateLimited,
   } = useMessages();
-  const { joinThread: joinSocketThread, leaveThread: leaveSocketThread, startTyping, stopTyping, typingUsers } = useSocket();
+  const { joinThread: joinSocketThread, leaveThread: leaveSocketThread, startTyping, stopTyping, typingUsers, onlineUsers } = useSocket();
   const [newMsg, setNewMsg] = useState("");
   const [isTyping, setIsTyping] = useState(false);
+  const [showFileUpload, setShowFileUpload] = useState(false);
+  const [currentView, setCurrentView] = useState('chat'); // 'chat', 'whiteboards', or 'search'
   const bottomRef = useRef(null);
   const typingTimeoutRef = useRef(null);
 
@@ -67,7 +73,7 @@ export default function ChatPage() {
         }
       }
     };
-  }, [selectedThread, currentUser, switchThread, setSelectedThread, joinSocketThread, leaveSocketThread]);
+  }, [selectedThread?._id, currentUser?.uid]); // CRITICAL FIX: Only depend on the actual IDs to prevent infinite loops
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -95,11 +101,17 @@ export default function ChatPage() {
   };
 
   const handleTyping = (value) => {
+    // CRITICAL FIX: Always update input value first, regardless of thread state
     setNewMsg(value);
     
-    if (!selectedThread || !value.trim()) {
+    // Don't proceed with typing indicators if no thread is selected
+    if (!selectedThread) {
+      return;
+    }
+    
+    if (!value.trim()) {
       // Stop typing if input is empty
-      if (isTyping) {
+      if (isTyping && selectedThread?._id) {
         stopTyping(selectedThread._id);
         setIsTyping(false);
       }
@@ -110,8 +122,8 @@ export default function ChatPage() {
       return;
     }
     
-    // Start typing if not already
-    if (!isTyping) {
+    // Start typing if not already and we have a valid thread
+    if (!isTyping && selectedThread?._id) {
       startTyping(selectedThread._id, currentUser?.email || 'Anonymous');
       setIsTyping(true);
     }
@@ -123,7 +135,7 @@ export default function ChatPage() {
     
     // Stop typing after 2 seconds of inactivity
     typingTimeoutRef.current = setTimeout(() => {
-      if (isTyping) {
+      if (isTyping && selectedThread?._id) {
         stopTyping(selectedThread._id);
         setIsTyping(false);
       }
@@ -167,12 +179,14 @@ export default function ChatPage() {
   return (
     <div className="flex h-screen bg-gradient-to-br from-slate-50 via-blue-50/30 to-indigo-50/40">
       {/* Ultra-Modern Sidebar */}
-      <aside className="w-80 bg-white/80 backdrop-blur-xl border-r border-white/20 shadow-xl flex flex-col relative overflow-hidden">
+      <aside className="w-80 bg-white/80 backdrop-blur-xl border-r border-white/20 shadow-xl flex flex-col relative">
         {/* Gradient Background */}
         <div className="absolute inset-0 bg-gradient-to-br from-blue-500/5 via-purple-500/5 to-pink-500/5" />
 
-        {/* Header */}
-        <div className="relative p-6 border-b border-white/10">
+        {/* Scrollable Content */}
+        <div className="relative flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-300 scrollbar-track-transparent">
+          {/* Header */}
+          <div className="relative p-6 border-b border-white/10">
           <div className="flex items-center justify-between mb-6">
             <div className="flex items-center space-x-3">
               <div className="relative">
@@ -215,9 +229,9 @@ export default function ChatPage() {
           </div>
         </div>
 
-        {/* Threads List */}
-        <div className="relative flex-1 overflow-y-auto">
-          <div className="p-4">
+          {/* Threads List */}
+          <div className="relative">
+            <div className="p-4 pb-6">
             <div className="flex items-center space-x-2 mb-4">
               <span className="text-slate-400">#</span>
               <h2 className="text-sm font-semibold text-slate-700 uppercase tracking-wide">
@@ -282,6 +296,7 @@ export default function ChatPage() {
             </div>
           </div>
         </div>
+        </div>
       </aside>
 
       {/* Ultra-Modern Main Area */}
@@ -345,6 +360,40 @@ export default function ChatPage() {
                   </div>
 
                   <div className="flex items-center space-x-3">
+                    {/* View Tabs */}
+                    <div className="flex items-center bg-slate-100 rounded-lg p-1">
+                      <button
+                        onClick={() => setCurrentView('chat')}
+                        className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                          currentView === 'chat'
+                            ? 'bg-white text-slate-900 shadow-sm'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        💬 Chat
+                      </button>
+                      <button
+                        onClick={() => setCurrentView('whiteboards')}
+                        className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                          currentView === 'whiteboards'
+                            ? 'bg-white text-slate-900 shadow-sm'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        🎨 Whiteboards
+                      </button>
+                      <button
+                        onClick={() => setCurrentView('search')}
+                        className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                          currentView === 'search'
+                            ? 'bg-white text-slate-900 shadow-sm'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        🔍 Search
+                      </button>
+                    </div>
+
                     <button
                       onClick={handleLeaveThread}
                       className="inline-flex items-center space-x-2 px-4 py-2 rounded-xl text-sm font-medium transition-all duration-300 bg-red-100 hover:bg-red-200 text-red-700 border border-red-200 hover:border-red-300"
@@ -353,84 +402,117 @@ export default function ChatPage() {
                       <span>Leave</span>
                     </button>
                     
-                    <button
-                      onClick={handleSummarize}
-                      disabled={isSummarizing || messages.length === 0}
-                      className={`inline-flex items-center space-x-2 px-6 py-3 rounded-2xl text-sm font-medium transition-all duration-300 ${
-                        isSummarizing || messages.length === 0
-                          ? "bg-slate-100 text-slate-400 cursor-not-allowed"
-                          : "bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white shadow-lg hover:shadow-xl transform hover:-translate-y-0.5"
-                      }`}
-                    >
-                      <span>✨</span>
-                      <span>
-                        {isSummarizing
-                          ? isLargeSummary
-                            ? "Processing..."
-                            : "Summarizing..."
-                          : `Summarize${
-                              messages.length > 20 ? ` (${messages.length})` : ""
-                            }`}
-                      </span>
-                    </button>
+                    {currentView === 'chat' && (
+                      <button
+                        onClick={handleSummarize}
+                        disabled={isSummarizing || messages.length === 0}
+                        className={`inline-flex items-center space-x-2 px-6 py-3 rounded-2xl text-sm font-medium transition-all duration-300 ${
+                          isSummarizing || messages.length === 0
+                            ? "bg-slate-100 text-slate-400 cursor-not-allowed"
+                            : "bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white shadow-lg hover:shadow-xl transform hover:-translate-y-0.5"
+                        }`}
+                      >
+                        <span>✨</span>
+                        <span>
+                          {isSummarizing
+                            ? isLargeSummary
+                              ? "Processing..."
+                              : "Summarizing..."
+                            : `Summarize${
+                                messages.length > 20 ? ` (${messages.length})` : ""
+                              }`}
+                        </span>
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
             </header>
 
-            {/* Messages Area with Modern Styling */}
+            {/* Content Area */}
             <div className="flex-1 overflow-y-auto relative">
-              <div className="absolute inset-0 bg-gradient-to-br from-slate-50/50 via-blue-50/30 to-purple-50/20" />
-              <div className="relative max-w-5xl mx-auto px-8 py-8 space-y-6">
-                {messages.map((msg) => (
-                  <div key={msg._id} className="animate-slide-up">
-                    <MessageItem message={msg} />
+              {currentView === 'chat' ? (
+                /* Chat Messages */
+                <>
+                  <div className="absolute inset-0 bg-gradient-to-br from-slate-50/50 via-blue-50/30 to-purple-50/20" />
+                  <div className="relative max-w-5xl mx-auto px-8 py-8 space-y-6">
+                    {messages.map((msg) => (
+                      <div key={msg._id} className="animate-slide-up">
+                        <MessageItem message={msg} />
+                      </div>
+                    ))}
+
+                    {/* Online Users Indicator */}
+                    {selectedThread && (
+                      <OnlineUsersIndicator 
+                        onlineUsers={onlineUsers}
+                        currentThreadId={selectedThread._id}
+                        currentUserEmail={currentUser?.email}
+                      />
+                    )}
+
+                    {/* User Typing Indicators */}
+                    {selectedThread && (
+                      <UserTypingIndicator 
+                        typingUsers={typingUsers}
+                        currentThreadId={selectedThread._id}
+                        currentUserEmail={currentUser?.email}
+                      />
+                    )}
+
+                    {/* Enhanced AI Typing Indicators */}
+                    {(isLoading || isSummarizing) && (
+                      <TypingIndicator
+                        message={
+                          isLoading
+                            ? "AI is responding..."
+                            : "AI is summarizing the thread..."
+                        }
+                        isLongTask={isLargeSummary}
+                      />
+                    )}
+
+                    {messages.length === 0 && !isLoading && (
+                      <div className="text-center py-24">
+                        <div className="w-24 h-24 bg-gradient-to-tr from-blue-100 via-purple-100 to-pink-100 rounded-3xl flex items-center justify-center mx-auto mb-8 shadow-lg">
+                          <span className="text-4xl">💬</span>
+                        </div>
+                        <h3 className="text-2xl font-bold text-slate-900 mb-4">
+                          Start the conversation
+                        </h3>
+                        <p className="text-slate-600 max-w-md mx-auto leading-relaxed">
+                          Ask a question or share your thoughts. Our AI assistant
+                          will help guide the discussion with intelligent insights.
+                        </p>
+                      </div>
+                    )}
+
+                    <div ref={bottomRef}></div>
                   </div>
-                ))}
-
-                {/* User Typing Indicators */}
-                {selectedThread && (
-                  <UserTypingIndicator 
-                    typingUsers={typingUsers}
-                    currentThreadId={selectedThread._id}
-                    currentUserEmail={currentUser?.email}
-                  />
-                )}
-
-                {/* Enhanced AI Typing Indicators */}
-                {(isLoading || isSummarizing) && (
-                  <TypingIndicator
-                    message={
-                      isLoading
-                        ? "AI is responding..."
-                        : "AI is summarizing the thread..."
-                    }
-                    isLongTask={isLargeSummary}
-                  />
-                )}
-
-                {messages.length === 0 && !isLoading && (
-                  <div className="text-center py-24">
-                    <div className="w-24 h-24 bg-gradient-to-tr from-blue-100 via-purple-100 to-pink-100 rounded-3xl flex items-center justify-center mx-auto mb-8 shadow-lg">
-                      <span className="text-4xl">💬</span>
-                    </div>
-                    <h3 className="text-2xl font-bold text-slate-900 mb-4">
-                      Start the conversation
-                    </h3>
-                    <p className="text-slate-600 max-w-md mx-auto leading-relaxed">
-                      Ask a question or share your thoughts. Our AI assistant
-                      will help guide the discussion with intelligent insights.
-                    </p>
+                </>
+              ) : currentView === 'whiteboards' ? (
+                /* Whiteboard Manager */
+                <>
+                  <div className="absolute inset-0 bg-gradient-to-br from-slate-50/50 via-blue-50/30 to-purple-50/20" />
+                  <div className="relative max-w-7xl mx-auto px-8 py-8">
+                    <WhiteboardManager threadId={selectedThread._id} />
                   </div>
-                )}
-
-                <div ref={bottomRef}></div>
-              </div>
+                </>
+              ) : (
+                /* Message Search */
+                <>
+                  <div className="absolute inset-0 bg-gradient-to-br from-slate-50/50 via-blue-50/30 to-purple-50/20" />
+                  <div className="relative max-w-5xl mx-auto px-8 py-8">
+                    <MessageSearch threadId={selectedThread._id} />
+                  </div>
+                </>
+              )}
             </div>
 
-            {/* Ultra-Modern Message Input */}
-            <div className="bg-white/80 backdrop-blur-xl border-t border-white/20 relative overflow-hidden">
-              <div className="absolute inset-0 bg-gradient-to-r from-blue-500/5 via-purple-500/5 to-pink-500/5" />
+            {/* Ultra-Modern Message Input - Only for Chat View */}
+            {currentView === 'chat' && (
+              <div className="bg-white/80 backdrop-blur-xl border-t border-white/20 relative overflow-hidden">
+                <div className="absolute inset-0 bg-gradient-to-r from-blue-500/5 via-purple-500/5 to-pink-500/5" />
               <div className="relative max-w-5xl mx-auto p-8">
                 <div className="flex items-end space-x-4">
                   <div className="flex-1">
@@ -444,11 +526,15 @@ export default function ChatPage() {
                             handleSend();
                           }
                         }}
-                        placeholder="Type your message or question... (Shift+Enter for new line)"
-                        disabled={isLoading}
+                        onFocus={() => {
+                          // CRITICAL FIX: Debug logging to help diagnose input issues
+                          console.log('📝 Textarea focused - isLoading:', isLoading, 'selectedThread:', !!selectedThread);
+                        }}
+                        placeholder={selectedThread ? "Type your message or question... (Shift+Enter for new line)" : "Select a thread to start messaging"}
+                        disabled={isLoading || !selectedThread}
                         rows={1}
                         className={`w-full px-6 py-4 bg-white/90 backdrop-blur-sm border border-slate-200 rounded-2xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300 resize-none shadow-lg hover:shadow-xl ${
-                          isLoading ? "bg-slate-50 text-slate-400" : ""
+                          (isLoading || !selectedThread) ? "bg-slate-50 text-slate-400" : ""
                         }`}
                         style={{ minHeight: "56px", maxHeight: "160px" }}
                       />
@@ -466,6 +552,14 @@ export default function ChatPage() {
                           <span className="text-orange-600 font-medium">
                             ⏱️ Please wait before sending another message
                           </span>
+                        ) : !selectedThread ? (
+                          <span className="text-blue-600 font-medium">
+                            💡 Select a thread from the sidebar to start messaging
+                          </span>
+                        ) : isLoading ? (
+                          <span className="text-orange-600 font-medium">
+                            ⏳ Loading... Please wait
+                          </span>
                         ) : (
                           <>
                             Press{" "}
@@ -480,10 +574,31 @@ export default function ChatPage() {
                           </>
                         )}
                       </div>
+                      
+                      {/* CRITICAL FIX: Debug info to help diagnose issues */}
+                      {import.meta.env.DEV && (
+                        <div className="text-xs text-slate-400">
+                          Debug: Loading={isLoading ? 'true' : 'false'}, Thread={selectedThread ? 'selected' : 'none'}
+                        </div>
+                      )}
                     </div>
                   </div>
 
                   <div className="flex items-center space-x-3">
+                    {/* File Upload Button */}
+                    <button
+                      onClick={() => setShowFileUpload(true)}
+                      disabled={isLoading || isRateLimited}
+                      className={`px-4 py-4 rounded-2xl font-medium transition-all duration-300 ${
+                        isLoading || isRateLimited
+                          ? "bg-slate-200 text-slate-400 cursor-not-allowed"
+                          : "bg-gradient-to-r from-orange-500 to-red-600 hover:from-orange-600 hover:to-red-700 text-white shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 active:translate-y-0"
+                      }`}
+                      title={isRateLimited ? "Rate limited - please wait before uploading files" : "Upload files"}
+                    >
+                      <span className="text-lg">📎</span>
+                    </button>
+
                     {/* Summon AI Button */}
                     <button
                       onClick={handleSummonAI}
@@ -515,6 +630,7 @@ export default function ChatPage() {
                 </div>
               </div>
             </div>
+            )}
           </>
         ) : (
           /* Ultra-Modern Welcome Screen */
@@ -601,6 +717,29 @@ export default function ChatPage() {
           </div>
         )}
       </main>
+
+      {/* File Upload Modal */}
+      {showFileUpload && selectedThread && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-xl font-bold text-gray-800">Upload Files</h2>
+              <button
+                onClick={() => setShowFileUpload(false)}
+                className="text-gray-500 hover:text-gray-700 text-2xl"
+              >
+                ×
+              </button>
+            </div>
+            
+            <FileUpload
+              threadId={selectedThread._id}
+              onUploadComplete={() => setShowFileUpload(false)}
+            />
+          </div>
+        </div>
+      )}
+
       {import.meta.env.DEV && <DebugPanel />}
     </div>
   );

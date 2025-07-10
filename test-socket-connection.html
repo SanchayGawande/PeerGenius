@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Socket.IO Connection Test</title>
+    <script src="https://cdn.socket.io/4.0.0/socket.io.min.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .status { padding: 10px; margin: 10px 0; border-radius: 5px; }
+        .connected { background-color: #d4edda; color: #155724; }
+        .disconnected { background-color: #f8d7da; color: #721c24; }
+        .info { background-color: #d1ecf1; color: #0c5460; }
+        .error { background-color: #f8d7da; color: #721c24; }
+        #logs { height: 300px; overflow-y: auto; border: 1px solid #ccc; padding: 10px; }
+    </style>
+</head>
+<body>
+    <h1>🔌 Socket.IO Connection Test</h1>
+    <div id="status" class="status disconnected">❌ Disconnected</div>
+    <div id="logs"></div>
+    
+    <script>
+        const logs = document.getElementById('logs');
+        const status = document.getElementById('status');
+        
+        function addLog(message, type = 'info') {
+            const timestamp = new Date().toLocaleTimeString();
+            const logEntry = document.createElement('div');
+            logEntry.className = type;
+            logEntry.innerHTML = `[${timestamp}] ${message}`;
+            logs.appendChild(logEntry);
+            logs.scrollTop = logs.scrollHeight;
+        }
+        
+        addLog('🚀 Attempting to connect to Socket.IO server...');
+        
+        const socket = io('http://localhost:5050', {
+            autoConnect: true,
+            reconnection: true,
+            reconnectionAttempts: 5,
+            reconnectionDelay: 1000,
+            timeout: 20000,
+            transports: ['polling', 'websocket']
+        });
+        
+        socket.on('connect', () => {
+            addLog('✅ Connected to Socket.IO server', 'connected');
+            status.className = 'status connected';
+            status.innerHTML = '✅ Connected';
+            
+            // Test user join
+            socket.emit('user:join', {
+                userId: 'test-user-123',
+                email: 'test@example.com'
+            });
+            addLog('📤 Sent user:join event');
+        });
+        
+        socket.on('disconnect', (reason) => {
+            addLog(`❌ Disconnected from Socket.IO server: ${reason}`, 'error');
+            status.className = 'status disconnected';
+            status.innerHTML = '❌ Disconnected';
+        });
+        
+        socket.on('connect_error', (error) => {
+            addLog(`🚫 Connection error: ${error.message}`, 'error');
+            addLog(`🚫 Error type: ${error.type}`, 'error');
+            addLog(`🚫 Error description: ${error.description}`, 'error');
+            status.className = 'status disconnected';
+            status.innerHTML = '❌ Connection Error';
+        });
+        
+        socket.on('error', (error) => {
+            addLog(`🚫 Socket error: ${error}`, 'error');
+        });
+        
+        // Test connection after 3 seconds
+        setTimeout(() => {
+            if (socket.connected) {
+                addLog('🎉 Socket.IO connection test PASSED!', 'connected');
+            } else {
+                addLog('❌ Socket.IO connection test FAILED!', 'error');
+            }
+        }, 3000);
+    </script>
+</body>
+</html>

@@ -2,18 +2,28 @@
 
 import axios from "axios";
 import { auth } from "./firebase";
+import requestThrottle from "./utils/requestThrottle";
 
-// Create axios instance with base URL
+// Create axios instance with base URL that uses Vite proxy
 const instance = axios.create({
-  baseURL: "/api", // Use Vite proxy instead of direct backend URL
+  baseURL: "/api", // Use relative path to leverage Vite proxy
   headers: {
     "Content-Type": "application/json",
   },
 });
 
-// Request interceptor to add auth token
+// Request interceptor to add auth token and throttling
 instance.interceptors.request.use(
   async (config) => {
+    // CRITICAL FIX: Check request throttling before proceeding
+    const fullUrl = `${config.baseURL}${config.url}`;
+    if (!requestThrottle.shouldAllowRequest(fullUrl)) {
+      const error = new Error('Request blocked due to rate limiting');
+      error.code = 'ERR_RATE_LIMITED';
+      error.config = config;
+      return Promise.reject(error);
+    }
+    
     try {
       const user = auth.currentUser;
       if (user) {
@@ -26,6 +36,10 @@ instance.interceptors.request.use(
       } else if (import.meta.env.DEV) {
         console.warn("⚠️ No authenticated user found for API request");
       }
+      
+      // Record the request for throttling
+      requestThrottle.recordRequest(fullUrl);
+      
     } catch (error) {
       console.error("❌ Error getting auth token:", error);
     }

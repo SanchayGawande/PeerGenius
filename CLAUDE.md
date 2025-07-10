@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 cd frontend
-npm run dev      # Start development server
+npm run dev      # Start development server (http://localhost:5173)
 npm run build    # Build for production
 npm run lint     # Run ESLint
 npm run preview  # Preview production build
@@ -18,85 +18,181 @@ npm run preview  # Preview production build
 
 ```bash
 cd backend
-npm run dev      # Start development server with nodemon
+npm run dev      # Start with nodemon (http://localhost:5050)
 npm start        # Start production server
 ```
 
+### Full Stack Development
+
+Start both servers in separate terminals:
+
+1. Backend: `cd backend && npm run dev`
+2. Frontend: `cd frontend && npm run dev`
+
 ## Architecture Overview
 
-This is a full-stack academic assistance platform called **PeerGenius** with AI integration.
+### Tech Stack
 
-### Frontend Architecture
+- **Frontend**: React 19 + Vite + Tailwind CSS + Radix UI
+- **Backend**: Node.js + Express + MongoDB + Socket.IO
+- **Authentication**: Firebase Auth
+- **AI Integration**: Groq API (LLaMA models)
+- **Real-time**: Socket.IO for WebSockets
 
-- **Framework**: React 19.1.0 with Vite build tool
-- **Styling**: Tailwind CSS with custom PeerGenius theme (purple/blue branding)
-- **UI Components**: Radix UI primitives for consistent design
-- **State Management**: React Context API (AuthContext, ThreadContext, MessageContext)
-- **Routing**: React Router DOM with protected routes
-- **Authentication**: Firebase Auth client-side
+### Project Structure
 
-### Backend Architecture
+```
+peergenius/
+├── frontend/                 # React frontend
+│   ├── src/
+│   │   ├── components/       # Reusable UI components
+│   │   ├── contexts/         # React Context providers
+│   │   ├── pages/           # Route components
+│   │   └── hooks/           # Custom React hooks
+├── backend/                  # Node.js backend
+│   ├── controllers/         # API route handlers
+│   ├── models/              # Mongoose schemas
+│   ├── routes/              # API route definitions
+│   ├── middleware/          # Auth & validation
+│   ├── utils/               # Utilities including AI logic
+│   └── services/            # Business logic services
+```
 
-- **Framework**: Express.js RESTful API
-- **Database**: MongoDB with Mongoose ODM
-- **Authentication**: Firebase Admin SDK for token verification
-- **AI Integration**: Groq API with LangChain, OpenAI for academic assistance
-- **Models**: User, Thread, Message schemas
+## Key Components & Systems
 
-### Key Integration Points
+### AI Decision Engine
 
-- Frontend proxies `/api` calls to backend via Vite config
-- Backend serves API endpoints on port 5050
-- Firebase UID synchronization between client auth and MongoDB user records
-- Authentication middleware protects all API routes
+- **Location**: `backend/utils/aiDecisionEngine.js`
+- **Purpose**: Intelligent logic for when AI should respond in conversations
+- **Solo Mode**: AI responds to everything (personal tutor behavior)
+- **Multi-user Mode**: AI responds only to explicit mentions and academic content
+- **Functions**: `shouldAIRespond()`, `detectQuestion()`, `detectAcademicIntent()`
 
-## File Structure Context
+### Real-time Features (Socket.IO)
 
-### Frontend Structure
+- **Server**: `backend/server.js` (lines 118-351)
+- **Events**: `user:join`, `thread:join`, `typing:start`, `typing:stop`, `whiteboard:drawing`
+- **Rooms**: Thread-based rooms for isolated communication
+- **Features**: Online user tracking, typing indicators, auto-cleanup
 
-- `src/components/`: Reusable UI components
-- `src/contexts/`: React Context providers (Auth, Thread, Message)
-- `src/pages/`: Route components for different views
-- `src/utils/`: Utility functions and helpers
-- `src/firebase.js`: Firebase client configuration
+### Authentication Flow
 
-### Backend Structure
+- **Firebase Auth**: Frontend authentication
+- **JWT Validation**: Backend middleware validates Firebase tokens
+- **Protected Routes**: Frontend route protection with `useAuth` hook
 
-- `controllers/`: API route handlers and business logic
-- `models/`: MongoDB/Mongoose data models
-- `routes/`: API route definitions
-- `middleware/`: Authentication and validation middleware
-- `firebaseAdmin.js`: Firebase Admin SDK setup
-- `groqClient.js`: Groq AI API client configuration
+### Database Models (MongoDB + Mongoose)
 
-## Development Workflow
+- **Thread**: Discussion threads with public/private visibility
+- **Message**: Chat messages with AI response tracking
+- **User**: User profiles and authentication data
+- **Whiteboard**: Collaborative drawing boards
+- **AIInteraction**: AI usage analytics
+- **LearningAnalytics**: Student learning metrics
 
-### Environment Setup
+### API Routes Structure
 
-Both frontend and backend require `.env` files with:
+- `/api/threads` - Thread management
+- `/api/messages` - Message handling with AI integration
+- `/api/users` - User management
+- `/api/whiteboards` - Collaborative whiteboards
+- `/api/ai/tutor` - AI tutoring endpoints
+- `/api/ai/generate` - Content generation
+- `/api/ai/assist` - Intelligent assistance
+- `/api/analytics` - Learning analytics
 
-- Firebase configuration (API keys, project ID)
-- MongoDB connection string
-- Groq API key for AI features
+## Development Patterns
 
-### Common Development Tasks
+### Context Providers
 
-- **API Development**: Add new routes in `backend/routes/`, implement handlers in `backend/controllers/`
-- **Frontend Features**: Create components in `src/components/`, add pages in `src/pages/`
-- **Authentication**: All backend routes use Firebase middleware, frontend uses AuthContext
-- **Database**: Mongoose models in `backend/models/` define data structure
-- **AI Integration**: Groq client handles AI-powered academic assistance
+The app uses multiple React contexts for state management:
 
-### Testing
+- `AuthContext` - User authentication
+- `ThreadContext` - Thread state
+- `MessageContext` - Message state
+- `SocketContext` - Real-time connections
+- `WhiteboardContext` - Collaborative drawing
+- `AnalyticsContext` - Learning analytics
 
-No specific test commands configured - check with project maintainers for testing approach.
+### Error Handling
 
-## Key Technologies
+- Backend uses centralized error handling middleware
+- Frontend uses React Error Boundaries
+- Toast notifications for user feedback
 
-- **Frontend**: React, Vite, Tailwind CSS, Radix UI, Firebase Auth, Axios
-- **Backend**: Node.js, Express, MongoDB, Mongoose, Firebase Admin, Groq API, LangChain
-- **Authentication**: Firebase (client + admin)
-- **AI**: Groq API for academic assistance features
+### Rate Limiting
+
+- Development: 300 requests/minute
+- Production: 60 requests/minute
+- AI endpoints have separate rate limits
+
+## Environment Variables
+
+### Backend (.env)
+
+```
+MONGO_URI=mongodb_connection_string
+GROQ_API_KEY=groq_api_key
+FIREBASE_PROJECT_ID=firebase_project_id
+FIREBASE_PRIVATE_KEY=firebase_private_key
+FIREBASE_CLIENT_EMAIL=firebase_client_email
+PORT=5050
+NODE_ENV=development
+```
+
+### Frontend (.env)
+
+```
+VITE_FIREBASE_API_KEY=firebase_api_key
+VITE_FIREBASE_AUTH_DOMAIN=firebase_auth_domain
+VITE_FIREBASE_PROJECT_ID=firebase_project_id
+VITE_FIREBASE_STORAGE_BUCKET=firebase_storage_bucket
+VITE_FIREBASE_MESSAGING_SENDER_ID=messaging_sender_id
+VITE_FIREBASE_APP_ID=firebase_app_id
+VITE_API_URL=http://localhost:5050
+```
+
+## Testing
+
+- No specific test framework configured yet
+- Manual testing via browser and API endpoints
+- Backend health check: `GET /health`
+
+## Common Development Tasks
+
+### Adding New API Endpoints
+
+1. Create controller in `backend/controllers/`
+2. Define routes in `backend/routes/`
+3. Add middleware for authentication/validation
+4. Mount routes in `backend/server.js`
+
+### Adding New Frontend Components
+
+1. Create component in `frontend/src/components/`
+2. Follow existing patterns with Tailwind CSS
+3. Use Radix UI for accessible primitives
+4. Add to routing in `frontend/src/App.jsx` if needed
+
+### Modifying AI Behavior
+
+- Edit `backend/utils/aiDecisionEngine.js`
+- Adjust detection functions for different content types
+- Test with solo vs multi-user scenarios
+
+### Real-time Features
+
+- Add Socket.IO events in `backend/server.js`
+- Handle events in `frontend/src/contexts/SocketContext.jsx`
+- Test with multiple browser windows
+
+## Security Considerations
+
+- Firebase tokens validated on every protected route
+- Rate limiting prevents API abuse
+- Input validation using express-validator
+- CORS configured for frontend-backend communication
+- Helmet.js for security headers
 
 1. First think through the problem, read the codebase for relevant files, and write a plan to tasks/todo.md.
 2. The plan should have a list of todo items that you can check off as you complete them
@@ -107,3 +203,4 @@ No specific test commands configured - check with project maintainers for testin
 7. Finally, add a review section to the [todo.md](http://todo.md/) file with a summary of the changes you made and any other relevant information.
 
 Please check through all the code you just wrote and make sure it follows security best practices. make sure there are no sensitive information in the front and and there are no vulnerabilities that can be exploited
+

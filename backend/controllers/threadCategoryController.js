@@ -118,7 +118,7 @@ exports.createDefaultCategories = async (req, res) => {
 // Get category statistics
 exports.getCategoryStats = async (req, res) => {
   try {
-    const Thread = require('../models/Thread');
+    const Thread = require('../models/thread');
     
     const stats = await ThreadCategory.aggregate([
       {

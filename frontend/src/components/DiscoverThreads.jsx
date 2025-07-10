@@ -16,7 +16,7 @@ export default function DiscoverThreads() {
   // Get user's current thread IDs to avoid showing threads they're already in
   const userThreadIds = threads.map(t => t._id);
 
-  const fetchPublicThreads = useCallback(async (isRetry = false) => {
+  const fetchPublicThreads = useCallback(async (isRetry = false, forceRefresh = false) => {
     if (!isRetry) {
       setLoading(true);
       setError("");
@@ -24,20 +24,33 @@ export default function DiscoverThreads() {
     }
     
     try {
-      console.log("🔄 Fetching public threads...");
-      const response = await axios.get('/threads/public');
+      console.log(`🔄 Fetching public threads... (retry: ${isRetry}, force: ${forceRefresh})`);
+      
+      // CRITICAL FIX: Enhanced request with timeout and cache control
+      const requestConfig = {
+        timeout: 10000, // 10 second timeout
+        headers: {
+          'Cache-Control': forceRefresh ? 'no-cache' : 'max-age=60'
+        }
+      };
+      
+      const response = await axios.get('/threads/public', requestConfig);
       
       let threadsData;
-      // Handle both old and new response formats
-      if (response.data.success !== undefined) {
+      // Handle both old and new response formats with better error checking
+      if (response.data && response.data.success !== undefined) {
         // New format with success wrapper
-        threadsData = response.data.data || [];
+        if (response.data.success) {
+          threadsData = response.data.data || [];
+        } else {
+          throw new Error(response.data.message || 'Server returned unsuccessful response');
+        }
       } else if (Array.isArray(response.data)) {
         // Old format - direct array
         threadsData = response.data;
       } else {
         console.error("Unexpected response format:", response.data);
-        threadsData = [];
+        throw new Error('Invalid response format from server');
       }
       
       // Filter out threads the user is already in
@@ -64,16 +77,28 @@ export default function DiscoverThreads() {
       
       setError(errorMessage);
       
-      // Auto-retry logic for network errors (max 3 retries)
-      if ((err.code === 'ERR_NETWORK' || err.response?.status >= 500) && retryCount < 3) {
+      // CRITICAL FIX: Enhanced auto-retry logic with better error categorization
+      const shouldRetry = (
+        (err.code === 'ERR_NETWORK' || 
+         err.code === 'ECONNABORTED' ||
+         err.response?.status >= 500 ||
+         err.message?.includes('timeout')) && 
+        retryCount < 3
+      );
+      
+      if (shouldRetry) {
         const newRetryCount = retryCount + 1;
         setRetryCount(newRetryCount);
         
-        console.log(`⏰ Auto-retrying in ${newRetryCount * 2} seconds... (${newRetryCount}/3)`);
+        // Exponential backoff with jitter
+        const baseDelay = 1500; // 1.5 seconds base
+        const delay = baseDelay * Math.pow(2, newRetryCount - 1) + Math.random() * 1000;
+        
+        console.log(`⏰ Auto-retrying in ${Math.round(delay)}ms... (${newRetryCount}/3)`);
         
         setTimeout(() => {
-          fetchPublicThreads(true); // isRetry = true
-        }, newRetryCount * 2000); // Exponential backoff: 2s, 4s, 6s
+          fetchPublicThreads(true, false); // isRetry = true, forceRefresh = false
+        }, delay);
       }
       
     } finally {
@@ -82,6 +107,27 @@ export default function DiscoverThreads() {
       }
     }
   }, [userThreadIds, retryCount]);
+  
+  // CRITICAL FIX: Add manual refresh function for user-initiated refresh
+  const handleManualRefresh = useCallback(async () => {
+    try {
+      setRetryCount(0);
+      console.log('🔄 Manual refresh triggered by user');
+      
+      // Try cache refresh endpoint first, fallback to regular fetch
+      try {
+        await axios.post('/threads/public/refresh');
+        console.log('✨ Cache refresh successful, fetching updated data');
+      } catch (refreshError) {
+        console.warn('Cache refresh failed, proceeding with regular fetch:', refreshError.message);
+      }
+      
+      await fetchPublicThreads(false, true); // not retry, force refresh
+    } catch (error) {
+      console.error('Manual refresh failed:', error);
+      setError('Manual refresh failed. Please try again.');
+    }
+  }, [fetchPublicThreads]);
 
   useEffect(() => {
     fetchPublicThreads();
@@ -204,13 +250,23 @@ export default function DiscoverThreads() {
         </div>
       )}
 
-      <button
-        onClick={fetchPublicThreads}
-        disabled={loading}
-        className="w-full mt-4 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs rounded-lg transition-colors disabled:opacity-50"
-      >
-        🔄 Refresh
-      </button>
+      <div className="flex space-x-2 mt-4">
+        <button
+          onClick={() => fetchPublicThreads(false, false)}
+          disabled={loading}
+          className="flex-1 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs rounded-lg transition-colors disabled:opacity-50"
+        >
+          🔄 Refresh
+        </button>
+        <button
+          onClick={handleManualRefresh}
+          disabled={loading}
+          className="px-3 py-2 bg-blue-100 hover:bg-blue-200 text-blue-600 text-xs rounded-lg transition-colors disabled:opacity-50"
+          title="Force refresh with cache clear"
+        >
+          ⚡ Force
+        </button>
+      </div>
     </div>
   );
 }

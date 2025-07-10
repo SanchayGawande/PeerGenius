@@ -8,6 +8,8 @@ import { MessageProvider } from "./contexts/MessageContext";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { NotificationProvider } from "./contexts/NotificationContext";
 import { SocketProvider } from "./contexts/SocketContext";
+import { WhiteboardProvider } from "./contexts/WhiteboardContext";
+import { AnalyticsProvider } from "./contexts/AnalyticsContext";
 import LoginPage from "./pages/LoginPage";
 import SignupPage from "./pages/SignupPage";
 import ChatPage from "./pages/ChatPage";
@@ -15,6 +17,12 @@ import LandingPage from "./pages/LandingPage";
 import ProfilePage from "./pages/ProfilePage";
 import SettingsPage from "./pages/SettingsPage";
 import ToastContainer from "./components/Toast";
+import AITutor from "./components/AITutor";
+import AnalyticsDashboard from "./components/AnalyticsDashboard";
+import RealTimeAnalytics from "./components/RealTimeAnalytics";
+import ContentGenerator from "./components/ContentGenerator";
+import IntelligentAssistance from "./components/IntelligentAssistance";
+import ErrorBoundary from "./components/ErrorBoundary";
 import { useAuth } from "./contexts/AuthContext";
 
 // Protected Route Component
@@ -77,13 +85,16 @@ function RootRedirect() {
 
 function App() {
   return (
-    <ThemeProvider>
-      <NotificationProvider>
-        <AuthProvider>
-          <SocketProvider>
-            <ThreadProvider>
-              <MessageProvider>
-              <Routes>
+    <ErrorBoundary>
+      <ThemeProvider>
+        <NotificationProvider>
+          <AuthProvider>
+            <AnalyticsProvider>
+              <SocketProvider>
+                <ThreadProvider>
+                  <MessageProvider>
+                    <WhiteboardProvider>
+                <Routes>
                 {/* Landing page - shows to unauthenticated users */}
                 <Route 
                   path="/welcome" 
@@ -142,6 +153,48 @@ function App() {
                   }
                 />
                 
+                {/* AI Features - protected routes */}
+                <Route
+                  path="/ai/tutor"
+                  element={
+                    <ProtectedRoute>
+                      <AITutor />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/ai/analytics"
+                  element={
+                    <ProtectedRoute>
+                      <AnalyticsDashboard />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/ai/realtime"
+                  element={
+                    <ProtectedRoute>
+                      <RealTimeAnalytics />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/ai/content"
+                  element={
+                    <ProtectedRoute>
+                      <ContentGenerator />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/ai/assistance"
+                  element={
+                    <ProtectedRoute>
+                      <IntelligentAssistance />
+                    </ProtectedRoute>
+                  }
+                />
+                
                 {/* Root redirect logic */}
                 <Route path="/" element={<RootRedirect />} />
                 
@@ -151,12 +204,15 @@ function App() {
               
               {/* Toast notifications */}
               <ToastContainer />
-              </MessageProvider>
-            </ThreadProvider>
-          </SocketProvider>
-        </AuthProvider>
-      </NotificationProvider>
-    </ThemeProvider>
+                    </WhiteboardProvider>
+                  </MessageProvider>
+                </ThreadProvider>
+              </SocketProvider>
+            </AnalyticsProvider>
+          </AuthProvider>
+        </NotificationProvider>
+      </ThemeProvider>
+    </ErrorBoundary>
   );
 }
 

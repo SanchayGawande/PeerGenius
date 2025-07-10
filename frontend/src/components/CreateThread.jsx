@@ -29,7 +29,7 @@ export default function CreateThread() {
     
     setIsLoadingCategories(true);
     try {
-      const response = await axios.get('/api/thread-categories', {
+      const response = await axios.get('/thread-categories', {
         headers: {
           'Authorization': `Bearer ${await currentUser.getIdToken()}`
         }
@@ -71,7 +71,7 @@ export default function CreateThread() {
         title.trim(), 
         description.trim(), 
         isPublic, 
-        selectedCategory || null, 
+        selectedCategory && selectedCategory.trim() !== '' ? selectedCategory : null, 
         tags
       );
       
@@ -84,7 +84,20 @@ export default function CreateThread() {
       setNewTag("");
     } catch (err) {
       console.error("Failed to create thread:", err);
-      showError(`Failed to create thread: ${err.message || 'Please try again.'}`);
+      
+      // Better error message handling
+      let errorMessage = 'Please try again.';
+      if (typeof err === 'string') {
+        errorMessage = err;
+      } else if (err?.message) {
+        errorMessage = err.message;
+      } else if (err?.response?.data?.message) {
+        errorMessage = err.response.data.message;
+      } else if (err?.response?.data?.error) {
+        errorMessage = err.response.data.error;
+      }
+      
+      showError(`Failed to create thread: ${errorMessage}`);
     } finally {
       setIsCreating(false);
     }
@@ -174,7 +187,7 @@ export default function CreateThread() {
           <div className="flex flex-wrap gap-2">
             {tags.map((tag, index) => (
               <span
-                key={index}
+                key={`tag-${tag}-${index}`}
                 className="inline-flex items-center space-x-1 px-3 py-1 bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded-full text-sm"
               >
                 <span>{tag}</span>

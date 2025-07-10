@@ -25,8 +25,17 @@ const validateCreateThread = [
     .withMessage('Description must be 1000 characters or less'),
   body('category')
     .optional()
-    .isMongoId()
-    .withMessage('Category must be a valid ID'),
+    .custom((value) => {
+      // Allow empty string, null, undefined, or valid ObjectId
+      if (!value || value === '') {
+        return true;
+      }
+      const mongoose = require('mongoose');
+      if (!mongoose.Types.ObjectId.isValid(value)) {
+        throw new Error('Category must be a valid ID');
+      }
+      return true;
+    }),
   body('tags')
     .optional()
     .isArray({ max: 10 })
