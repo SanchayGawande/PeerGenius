@@ -4,6 +4,59 @@ import { createContext, useContext, useState, useEffect, useRef, useCallback } f
 import axios from "../axios";
 import { handleApiError, isAuthError } from "../utils/errorHandler";
 import { useAuth } from "./AuthContext";
+import { useSocket } from "./SocketContext";
+
+// Student-friendly error messages for chat functionality
+const getChatFriendlyErrorMessage = (error, context) => {
+  const status = error?.response?.status;
+  const errorType = error?.response?.data?.errorType;
+  
+  // Network connectivity issues
+  if (error?.code === 'ERR_NETWORK' || error?.code === 'ETIMEDOUT') {
+    return `🌐 Connection lost! Your messages are safe. Check your internet and we'll reconnect automatically.`;
+  }
+  
+  // Authentication issues
+  if (status === 401 || status === 403) {
+    if (errorType === 'THREAD_ACCESS_DENIED') {
+      return `🚪 You don't have access to this study group anymore. The group settings may have changed.`;
+    }
+    return `🔐 Please log in again to continue chatting. Your messages are safe!`;
+  }
+  
+  // Rate limiting
+  if (status === 429) {
+    return `⏰ Whoa, slow down! You're sending messages too quickly. Take a breath and try again in a moment.`;
+  }
+  
+  // File upload issues
+  if (context === 'upload' && status === 413) {
+    return `📁 File too large! Please choose a smaller file (under 5MB) to share with your study group.`;
+  }
+  
+  // Server errors
+  if (status >= 500) {
+    return `🔧 Our chat servers are having a moment. Your messages are safe - we'll reconnect automatically!`;
+  }
+  
+  // Context-specific messages
+  switch (context) {
+    case 'sending':
+      return `💬 Couldn't send your message right now. Don't worry - we'll keep trying!`;
+    case 'loading':
+      return `💬 Having trouble loading messages. We'll keep trying to reconnect!`;
+    case 'upload':
+      return `📁 Couldn't upload your file right now. Please try again!`;
+    case 'search':
+      return `🔍 Search isn't working right now. Please try again in a moment!`;
+    case 'reaction':
+      return `😊 Couldn't add your reaction right now. Please try again!`;
+    case 'summary':
+      return `📊 Can't create a summary right now. Your messages are all still here though!`;
+    default:
+      return `💬 Something went wrong with the chat. Don't worry - your messages are safe!`;
+  }
+};
 
 const MessageContext = createContext();
 
@@ -16,28 +69,72 @@ export const MessageProvider = ({ children }) => {
   const [threadInfo, setThreadInfo] = useState(null);
   const [isPolling, setIsPolling] = useState(false);
   const [isRateLimited, setIsRateLimited] = useState(false);
-  const { logout, currentUser } = useAuth();
   
-  // Refs for polling
+  // New states for loading indicators
+  const [isSendingMessage, setIsSendingMessage] = useState(false);
+  const [isAIThinking, setIsAIThinking] = useState(false);
+  const [pendingMessage, setPendingMessage] = useState(null);
+  const { logout, currentUser } = useAuth();
+  const { joinThread } = useSocket();
+  
+  // Refs for polling and stable function references
   const pollingIntervalRef = useRef(null);
   const currentThreadIdRef = useRef(null);
   const lastMessageTimeRef = useRef(null);
+  
+  // PERFORMANCE FIX: Use stable references to prevent infinite re-renders
+  const logoutRef = useRef(logout);
+  logoutRef.current = logout;
+  
+  const fetchMessagesRef = useRef();
+  const joinThreadRef = useRef(joinThread);
+  joinThreadRef.current = joinThread;
 
   // Socket.IO real-time message listener
   useEffect(() => {
     const handleSocketMessage = (event) => {
       const { message, threadId } = event.detail;
       
-      // Only add message if it's for the current thread
-      if (threadId === currentThreadIdRef.current) {
+      // DEBUG: Log thread ID comparison
+      console.log(`🔍 Socket message received:`, {
+        messageId: message._id,
+        messageType: message.messageType,
+        receivedThreadId: threadId,
+        currentThreadId: currentThreadIdRef.current,
+        threadsMatch: threadId === currentThreadIdRef.current,
+        threadsMatchAsString: String(threadId) === String(currentThreadIdRef.current)
+      });
+      
+      // Convert thread IDs to strings for comparison (handle ObjectId vs string mismatch)
+      const normalizedMessageThreadId = String(threadId);
+      const normalizedCurrentThreadId = String(currentThreadIdRef.current || '');
+      
+      // Only add message if it's for the current thread OR if it's an AI message (more permissive for AI)
+      const isForCurrentThread = normalizedMessageThreadId === normalizedCurrentThreadId;
+      const isAIMessage = message.messageType === 'ai';
+      
+      if (isForCurrentThread || isAIMessage) {
+        console.log(`📨 Processing real-time message (AI: ${isAIMessage}, ThreadMatch: ${isForCurrentThread}):`, message);
+        
         setMessages(prev => {
           // Check if message already exists to avoid duplicates
           const existingIds = new Set(prev.map(msg => msg._id));
           if (!existingIds.has(message._id)) {
-            console.log(`📨 Adding real-time message to thread ${threadId}:`, message);
+            console.log(`✅ Adding real-time message to thread ${threadId}:`, {
+              messageId: message._id,
+              messageType: message.messageType,
+              textPreview: message.text?.substring(0, 50) + '...'
+            });
             return [...prev, message];
+          } else {
+            console.log(`🔄 Skipping duplicate message: ${message._id}`);
           }
           return prev;
+        });
+      } else {
+        console.log(`❌ Ignoring message for different thread:`, {
+          messageThreadId: normalizedMessageThreadId,
+          currentThreadId: normalizedCurrentThreadId
         });
       }
     };
@@ -68,6 +165,7 @@ export const MessageProvider = ({ children }) => {
 
   // Fetch messages for a thread
   const fetchMessages = useCallback(async (threadId, since = null) => {
+    console.log('🔧 DEBUG: fetchMessages called', { threadId, since });
     const isPollingRequest = !!since; // If 'since' is provided, this is a polling request
     
     if (!since) setIsLoading(true);
@@ -90,7 +188,9 @@ export const MessageProvider = ({ children }) => {
               setMessages(prev => {
                 const existingIds = new Set(prev.map(msg => msg._id));
                 const newMessages = response.data.messages.filter(msg => !existingIds.has(msg._id));
-                return [...prev, ...newMessages];
+                const allMessages = [...prev, ...newMessages];
+                // Keep only last 500 messages to prevent memory issues
+                return allMessages.slice(-500);
               });
             } else {
               // For initial load, replace all messages
@@ -120,7 +220,7 @@ export const MessageProvider = ({ children }) => {
           if (isNetworkError && isPollingRequest) {
             console.error(`🚨 Network exhaustion detected in polling, stopping all polling for thread ${threadId}`);
             stopPolling();
-            setError('Network issues detected. Polling stopped to prevent resource exhaustion.');
+            setError('🌐 Connection lost! We\'re working to reconnect your chat automatically.');
             break;
           }
           
@@ -138,7 +238,7 @@ export const MessageProvider = ({ children }) => {
           }
           
           // Handle final failure or non-retryable errors
-          const errorMessage = handleApiError(err, 'fetching messages');
+          const errorMessage = getChatFriendlyErrorMessage(err, 'loading');
           setError(errorMessage);
           if (!since) setMessages([]);
           
@@ -158,7 +258,7 @@ export const MessageProvider = ({ children }) => {
           
           // Don't trigger logout for thread access errors
           if (isAuthError(err)) {
-            await logout();
+            await logoutRef.current();
           }
           
           // Break out of retry loop for non-retryable errors
@@ -171,40 +271,102 @@ export const MessageProvider = ({ children }) => {
         setIsLoading(false);
       }
     }
-  }, [logout]);
+  }, []); // PERFORMANCE FIX: Empty dependency array, use ref for logout
+  
+  // Store stable reference
+  fetchMessagesRef.current = fetchMessages;
 
   // Post a new message
   const postMessage = async (threadId, content) => {
+    console.log('🔧 DEBUG: postMessage called', { threadId, content });
     setIsLoading(true);
+    setIsSendingMessage(true);
     setError(null);
     setIsRateLimited(false);
     
+    // Create a pending message for immediate UI feedback
+    const tempMessage = {
+      _id: `temp-${Date.now()}`,
+      content,
+      sender: currentUser?.uid || 'user',
+      senderEmail: currentUser?.email || 'user@example.com',
+      timestamp: new Date().toISOString(),
+      status: 'sending',
+      isTemporary: true
+    };
+    setPendingMessage(tempMessage);
+    
     try {
+      console.log('🔧 DEBUG: Sending message to API...');
       const response = await axios.post(`/messages/${threadId}`, {
         content,
       });
-      const { userMessage, aiMessage } = response.data;
+      console.log('🔧 DEBUG: API response:', response.data);
+      
+      // Handle different response formats
+      let userMessage, aiMessage;
+      
+      if (response.data.success && (response.data.userMessage || response.data.message)) {
+        // Development mode format: {success: true, userMessage: {...}, aiMessage: {...}}
+        userMessage = response.data.userMessage || response.data.message;
+        aiMessage = response.data.aiMessage;
+        console.log('🔧 DEBUG: Using development mode response format');
+      } else if (response.data.userMessage || response.data.aiMessage) {
+        // Production mode format: {userMessage: {...}, aiMessage: {...}}
+        userMessage = response.data.userMessage;
+        aiMessage = response.data.aiMessage;
+        console.log('🔧 DEBUG: Using production mode response format');
+      } else {
+        console.log('🔧 DEBUG: Unknown response format:', response.data);
+      }
+
+      // Clear pending message and sending state
+      setPendingMessage(null);
+      setIsSendingMessage(false);
 
       // Add the user message immediately (with deduplication safety)
       if (userMessage) {
+        console.log('🔧 DEBUG: Adding user message to state:', userMessage);
         setMessages((prev) => {
           const exists = prev.some(msg => msg._id === userMessage._id);
-          return exists ? prev : [...prev, userMessage];
+          console.log('🔧 DEBUG: Message exists check:', exists, 'Previous messages count:', prev.length);
+          const newMessages = exists ? prev : [...prev, userMessage];
+          console.log('🔧 DEBUG: New messages count:', newMessages.length);
+          return newMessages;
         });
+      } else {
+        console.log('🔧 DEBUG: No userMessage in response');
+      }
+
+      // Show AI thinking indicator if we expect an AI response
+      if (userMessage && !aiMessage) {
+        setIsAIThinking(true);
       }
 
       // Add AI response if available (with deduplication safety)
       if (aiMessage) {
+        console.log('🔧 DEBUG: Adding AI message to state:', aiMessage);
+        setIsAIThinking(false); // Clear AI thinking state
         setMessages((prev) => {
           const exists = prev.some(msg => msg._id === aiMessage._id);
-          return exists ? prev : [...prev, aiMessage];
+          console.log('🔧 DEBUG: AI message exists check:', exists);
+          const newMessages = exists ? prev : [...prev, aiMessage];
+          console.log('🔧 DEBUG: Messages after AI add:', newMessages.length);
+          return newMessages;
         });
+      } else {
+        console.log('🔧 DEBUG: No AI message in response');
       }
 
       return { userMessage, aiMessage };
     } catch (err) {
-      const errorMessage = handleApiError(err, 'posting message');
+      const errorMessage = getChatFriendlyErrorMessage(err, 'sending');
       setError(errorMessage);
+      
+      // Update pending message status to failed
+      if (pendingMessage) {
+        setPendingMessage(prev => prev ? { ...prev, status: 'failed' } : null);
+      }
       
       // Handle rate limiting
       if (err.response?.status === 429) {
@@ -214,12 +376,14 @@ export const MessageProvider = ({ children }) => {
       }
       
       if (isAuthError(err)) {
-        await logout();
+        await logoutRef.current();
       }
       
       throw new Error(errorMessage);
     } finally {
       setIsLoading(false);
+      setIsSendingMessage(false);
+      setIsAIThinking(false);
     }
   };
 
@@ -237,7 +401,8 @@ export const MessageProvider = ({ children }) => {
       return response.data;
     } catch (err) {
       console.error("Failed to summarize thread:", err);
-      setError(err.message || "Failed to summarize thread");
+      const errorMessage = getChatFriendlyErrorMessage(err, 'summary');
+      setError(errorMessage);
       throw err;
     } finally {
       setIsSummarizing(false);
@@ -277,7 +442,7 @@ export const MessageProvider = ({ children }) => {
         if (err.code === 'ERR_NETWORK' || err.code === 'ERR_INSUFFICIENT_RESOURCES') {
           console.error('🚨 Network exhaustion in polling - stopping all polling to prevent further resource exhaustion');
           stopPolling();
-          setError('Network issues detected. Please refresh the page to resume real-time updates.');
+          setError('🌐 Connection lost! We\'re working to reconnect your chat automatically.');
           return;
         }
         
@@ -323,6 +488,7 @@ export const MessageProvider = ({ children }) => {
 
   // Switch to a different thread
   const switchThread = useCallback(async (threadId) => {
+    console.log('🔧 DEBUG: switchThread called', { threadId, currentThread: currentThreadIdRef.current });
     // CRITICAL FIX: Add debouncing to prevent rapid thread switches
     if (currentThreadIdRef.current === threadId) {
       console.log(`Already on thread ${threadId}, skipping switch`);
@@ -332,12 +498,19 @@ export const MessageProvider = ({ children }) => {
     try {
       console.log(`🔄 Switching from thread ${currentThreadIdRef.current} to ${threadId}`);
       stopPolling();
+      console.log('🔧 DEBUG: Clearing messages...');
       clearMessages();
       
       // Add small delay to ensure cleanup completes
       await new Promise(resolve => setTimeout(resolve, 100));
       
-      await fetchMessages(threadId);
+      // CRITICAL FIX: Join Socket.IO room for real-time updates
+      console.log('🔧 DEBUG: Joining Socket.IO room...');
+      joinThreadRef.current(threadId);
+      
+      console.log('🔧 DEBUG: Fetching messages...');
+      await fetchMessagesRef.current(threadId);
+      console.log('🔧 DEBUG: Starting polling...');
       startPolling(threadId);
     } catch (error) {
       console.error(`❌ Thread switch failed for ${threadId}:`, error);
@@ -346,7 +519,7 @@ export const MessageProvider = ({ children }) => {
       clearMessages();
       throw error; // Re-throw so calling code can handle it
     }
-  }, [fetchMessages]);
+  }, []); // PERFORMANCE FIX: Empty dependency array, use stable refs
 
   // Clear messages when switching threads
   const clearMessages = () => {
@@ -380,7 +553,7 @@ export const MessageProvider = ({ children }) => {
       console.log(`👍 Reaction added: ${emoji} to message ${messageId}`);
       return response.data;
     } catch (err) {
-      const errorMessage = handleApiError(err, 'adding reaction');
+      const errorMessage = getChatFriendlyErrorMessage(err, 'reaction');
       setError(errorMessage);
       throw err;
     }
@@ -410,7 +583,7 @@ export const MessageProvider = ({ children }) => {
       console.log(`📎 Files uploaded to thread ${threadId}`);
       return response.data;
     } catch (err) {
-      const errorMessage = handleApiError(err, 'uploading files');
+      const errorMessage = getChatFriendlyErrorMessage(err, 'upload');
       setError(errorMessage);
       throw err;
     }
@@ -448,10 +621,16 @@ export const MessageProvider = ({ children }) => {
       console.log(`🔍 Search completed for thread ${threadId}:`, response.data);
       return response.data;
     } catch (err) {
-      const errorMessage = handleApiError(err, 'searching messages');
+      const errorMessage = getChatFriendlyErrorMessage(err, 'search');
       setError(errorMessage);
       throw err;
     }
+  }, []);
+
+  // Retry failed message
+  const retryMessage = useCallback(async (threadId, content) => {
+    setPendingMessage(null); // Clear any failed pending message
+    return await postMessage(threadId, content);
   }, []);
 
   const value = {
@@ -459,6 +638,7 @@ export const MessageProvider = ({ children }) => {
     setMessages,
     fetchMessages,
     postMessage,
+    retryMessage,
     summarizeThread,
     addReaction,
     uploadFiles,
@@ -473,6 +653,9 @@ export const MessageProvider = ({ children }) => {
     isLargeSummary,
     isPolling,
     isRateLimited,
+    isSendingMessage,
+    isAIThinking,
+    pendingMessage,
     error,
   };
 

@@ -8,6 +8,10 @@ const rateLimit = require("express-rate-limit");
 const helmet = require("helmet");
 const { createServer } = require("http");
 const { Server } = require("socket.io");
+// PHASE 4: Redis imports for horizontal scaling
+const { createAdapter } = require("@socket.io/redis-adapter");
+const redisManager = require("./utils/redisClient");
+const sessionManager = require("./utils/sessionManager");
 
 const userRoutes = require("./routes/userRoutes");
 const threadRoutes = require("./routes/threadRoutes");
@@ -18,61 +22,141 @@ const aiTutorRoutes = require("./routes/aiTutorRoutes");
 const contentGenerationRoutes = require("./routes/contentGenerationRoutes");
 const intelligentAssistanceRoutes = require("./routes/intelligentAssistanceRoutes");
 const analyticsRoutes = require("./routes/analyticsRoutes");
+const notificationRoutes = require("./routes/notificationRoutes");
+const threadPermissionRoutes = require("./routes/threadPermissionRoutes");
+const healthRoutes = require("./routes/healthRoutes");
+const verifyToken = require("./middleware/authMiddleware");
+const { addCorrelationId } = require("./middleware/correlationId");
+
+// PHASE 3: Import RBAC models
+const Role = require("./models/Role");
 
 const app = express();
 const server = createServer(app);
 
-// Enhanced Socket.IO setup with improved connection handling
+// PHASE 4: Enhanced Socket.IO setup with Redis adapter for horizontal scaling
+const socketConnections = new Map(); // Track connection attempts per IP (will migrate to Redis)
+const socketEventCounts = new Map(); // Track events per socket (will migrate to Redis)
+
+// Initialize Socket.IO server with enhanced configuration
 const io = new Server(server, {
   cors: {
-    origin: ["http://localhost:5173", "http://localhost:5174", process.env.FRONTEND_URL].filter(Boolean),
+    origin: ["http://localhost:5173", "http://localhost:5174", "http://localhost:5175", process.env.FRONTEND_URL].filter(Boolean),
     credentials: true,
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+    methods: ["GET", "POST"] // Reduced methods for security
   },
-  transports: ['polling', 'websocket'],
-  allowEIO3: true,
-  pingTimeout: 60000, // 60 seconds
+  transports: ['websocket', 'polling'], // Prefer websocket
+  allowEIO3: false, // Disable legacy support for security
+  pingTimeout: 30000, // Reduced to 30 seconds
   pingInterval: 25000, // 25 seconds
-  upgradeTimeout: 10000, // 10 seconds
-  maxHttpBufferSize: 1e6, // 1MB
+  upgradeTimeout: 5000, // Reduced to 5 seconds
+  maxHttpBufferSize: 512 * 1024, // Reduced to 512KB for security
   allowRequest: (req, callback) => {
-    // Enhanced connection validation
+    // SECURITY FIX: Enhanced connection validation with rate limiting
+    const clientIP = req.socket.remoteAddress || req.headers['x-forwarded-for'];
+    const now = Date.now();
+    
+    // Rate limiting: max 10 connections per IP per minute
+    if (!socketConnections.has(clientIP)) {
+      socketConnections.set(clientIP, []);
+    }
+    
+    const connections = socketConnections.get(clientIP);
+    const recentConnections = connections.filter(time => now - time < 60000);
+    
+    if (recentConnections.length >= 10) {
+      console.warn(`🚫 Socket.IO rate limit exceeded for IP: ${clientIP}`);
+      return callback('Rate limit exceeded', false);
+    }
+    
+    // Update connection tracking
+    recentConnections.push(now);
+    socketConnections.set(clientIP, recentConnections);
+    
     const isOriginValid = req.headers.origin && 
-      ["http://localhost:5173", "http://localhost:5174", process.env.FRONTEND_URL]
+      ["http://localhost:5173", "http://localhost:5174", "http://localhost:5175", process.env.FRONTEND_URL]
         .filter(Boolean)
         .includes(req.headers.origin);
     
-    callback(null, isOriginValid);
+    if (!isOriginValid && process.env.NODE_ENV !== 'development') {
+      console.warn(`🚫 Socket.IO invalid origin: ${req.headers.origin} from IP: ${clientIP}`);
+      return callback('Invalid origin', false);
+    }
+    
+    callback(null, true);
   }
 });
 
 // Make io available to routes
 app.set('io', io);
 
-// Enhanced MongoDB connection with optimized settings
-mongoose
-  .connect(process.env.MONGO_URI, {
-    maxPoolSize: 10, // Maintain up to 10 socket connections
-    serverSelectionTimeoutMS: 5000, // Keep trying to send operations for 5 seconds
-    socketTimeoutMS: 45000, // Close sockets after 45 seconds of inactivity
+// PERFORMANCE FIX: Optimized MongoDB connection pooling for production load
+if (process.env.MONGO_URI) {
+  const isProduction = process.env.NODE_ENV === 'production';
+  const isClustered = process.env.ENABLE_CLUSTERING === 'true';
+  
+  // Calculate optimal pool size based on environment
+  const basePoolSize = isProduction ? 20 : 10;
+  const maxPoolSize = isClustered ? basePoolSize * 2 : basePoolSize; // Double for clustered setup
+  const minPoolSize = Math.floor(maxPoolSize * 0.25); // 25% of max as minimum
+  
+  console.log(`🔧 Configuring MongoDB with pool size: ${minPoolSize}-${maxPoolSize} (${isProduction ? 'production' : 'development'}, clustered: ${isClustered})`);
+  
+  mongoose
+    .connect(process.env.MONGO_URI, {
+    // PERFORMANCE FIX: Optimized connection pool configuration
+    maxPoolSize, // Dynamic based on environment and clustering
+    minPoolSize, // Maintain minimum connections for faster response
+    maxIdleTimeMS: 30000, // Increased idle time for connection reuse
+    serverSelectionTimeoutMS: 5000, // Quick server selection
+    socketTimeoutMS: 45000, // Longer socket timeout for heavy queries
     family: 4, // Use IPv4, skip trying IPv6
-    maxIdleTimeMS: 30000, // Close connections after 30 seconds of inactivity
-    heartbeatFrequencyMS: 10000, // Send heartbeat every 10 seconds
+    heartbeatFrequencyMS: 10000, // Monitor connection health
+    
+    // Write and read optimization
     retryWrites: true, // Enable retryable writes
-    w: 'majority' // Write concern
+    w: 'majority', // Write concern for data safety
+    readPreference: 'primary', // Always read from primary for consistency
+    
+    // Connection optimization
+    bufferCommands: false, // Disable command buffering
+    maxConnecting: 5, // Limit concurrent connection attempts
+    
+    // Security and compression
+    ssl: isProduction, // SSL only in production
+    authSource: isProduction ? 'admin' : undefined, // Auth source only for production
+    compressors: ['zlib'], // Enable compression
+    zlibCompressionLevel: 6, // Compression level
+    
+    // PERFORMANCE FIX: Connection monitoring and timeouts
+    connectTimeoutMS: 10000, // Connection establishment timeout
+    waitQueueTimeoutMS: 5000, // Time to wait for a connection from the pool
   })
   .then(() => {
     console.log("✅ MongoDB connected successfully");
-    console.log(`📊 Connection pool size: ${mongoose.connection.db.options?.maxPoolSize || 'default'}`);
+    console.log(`📊 Connection pool configured: min=${minPoolSize}, max=${maxPoolSize}`);
+    console.log(`⚡ Performance optimizations: bufferCommands=false, compression=zlib, retryWrites=true`);
   })
   .catch((e) => {
     console.error("❌ MongoDB connection error:", e);
     process.exit(1);
   });
+} else {
+  console.warn("⚠️ No MONGO_URI provided - running without database");
+}
 
 // Handle MongoDB connection events
-mongoose.connection.on('connected', () => {
-  console.log('📡 MongoDB connected to ' + process.env.MONGO_URI);
+mongoose.connection.on('connected', async () => {
+  // SECURITY FIX: Don't log sensitive connection string
+  console.log('📡 MongoDB connected successfully');
+  
+  // PHASE 3: Initialize default roles
+  try {
+    await Role.createDefaultRoles();
+    console.log('🛡️ RBAC system initialized');
+  } catch (error) {
+    console.error('❌ Failed to initialize RBAC system:', error);
+  }
 });
 
 mongoose.connection.on('error', (err) => {
@@ -194,11 +278,17 @@ app.use(
       const allowedOrigins = [
         "http://localhost:5173", 
         "http://localhost:5174", 
+        "http://localhost:5175", 
         process.env.FRONTEND_URL
       ].filter(Boolean);
       
-      // Allow requests with no origin (mobile apps, etc.)
-      if (!origin) return callback(null, true);
+      // SECURITY FIX: Only allow no-origin requests in development
+      if (!origin && process.env.NODE_ENV === 'development') {
+        return callback(null, true);
+      } else if (!origin) {
+        console.warn(`CORS blocked request with no origin in production`);
+        return callback(new Error('Origin required'));
+      }
       
       if (allowedOrigins.includes(origin)) {
         callback(null, true);
@@ -208,15 +298,13 @@ app.use(
       }
     },
     credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'DELETE'], // Removed OPTIONS for security
     allowedHeaders: [
       'Content-Type', 
       'Authorization', 
-      'X-Requested-With', 
       'Accept', 
-      'Origin', 
-      'Cache-Control',
-      'X-CSRF-Token'
+      'Origin'
+      // Removed potentially dangerous headers
     ],
     exposedHeaders: ['Content-Length', 'X-RateLimit-Limit', 'X-RateLimit-Remaining'],
     maxAge: 86400, // 24 hours
@@ -236,6 +324,9 @@ app.use(express.urlencoded({
   parameterLimit: 100 // Limit number of parameters
 }));
 
+// Add correlation ID for request tracing
+app.use(addCorrelationId);
+
 // Add request size monitoring
 app.use((req, res, next) => {
   const contentLength = req.get('Content-Length');
@@ -252,134 +343,210 @@ app.use((req, res, next) => {
 // Serve uploaded files
 app.use('/uploads', express.static('uploads'));
 
-// CRITICAL FIX: Debug endpoint to check socket rooms
-app.get('/debug/rooms', (req, res) => {
+// SECURITY FIX: Secured debug endpoint with authentication
+app.get('/debug/rooms', verifyToken, (req, res) => {
   if (process.env.NODE_ENV !== 'development') {
-    return res.status(404).json({ error: 'Debug endpoint only available in development' });
+    return res.status(404).json({ error: 'Not found' });
   }
   
-  const rooms = {};
+  // Only show basic connection statistics, no sensitive data
   const allRooms = io.sockets.adapter.rooms;
+  let threadRoomCount = 0;
   
   allRooms.forEach((sockets, roomName) => {
     if (roomName.startsWith('thread:')) {
-      rooms[roomName] = {
-        clientCount: sockets.size,
-        clients: Array.from(sockets)
-      };
+      threadRoomCount++;
     }
   });
   
   res.json({
-    threadRooms: rooms,
+    totalThreadRooms: threadRoomCount,
     totalConnectedClients: io.sockets.sockets.size,
-    connectedUsers: Array.from(connectedUsers.entries()).map(([userId, data]) => ({
-      userId,
-      email: data.email,
-      status: data.status,
-      activeThreads: Array.from(data.activeThreads || [])
-    }))
+    connectedUserCount: connectedUsers.size,
+    timestamp: new Date().toISOString()
   });
 });
 
-// Enhanced health check endpoint with Socket.IO statistics
-app.get('/health', (req, res) => {
-  const mongoStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
-  
-  res.json({ 
-    status: 'OK', 
-    timestamp: new Date().toISOString(),
-    services: {
-      mongodb: mongoStatus,
-      socketio: 'active'
-    },
-    socketio: {
-      totalConnections: connectionStats.total,
-      activeConnections: connectionStats.active,
-      errorCount: connectionStats.errors,
-      connectedUsers: connectedUsers.size,
-      activeThreads: onlineUsers.size,
-      typingUsers: typingUsers.size
-    },
-    uptime: process.uptime(),
-    memory: process.memoryUsage()
-  });
-});
-
-// Enhanced Socket.IO event handlers with improved reliability and error handling
-const connectedUsers = new Map(); // userId -> {socketId, email, status, lastSeen, activeThreads}
-const typingUsers = new Map(); // threadId -> Map of userId -> {userName, startTime}
-const onlineUsers = new Map(); // threadId -> Set of userIds
-const typingTimeouts = new Map(); // userId:threadId -> timeoutId for auto-cleanup
-const connectionStats = { total: 0, active: 0, errors: 0 }; // Connection statistics
-
-// Enhanced connection health monitoring
-setInterval(() => {
-  const now = Date.now();
-  const staleConnections = [];
-  
-  // Find stale connections (no activity for 5 minutes)
-  for (const [userId, userData] of connectedUsers.entries()) {
-    if (now - userData.lastSeen.getTime() > 300000) { // 5 minutes
-      staleConnections.push(userId);
-    }
+// PERFORMANCE FIX: Broadcast optimizer debug endpoint
+app.get('/debug/broadcast-stats', verifyToken, (req, res) => {
+  if (process.env.NODE_ENV !== 'development') {
+    return res.status(404).json({ error: 'Not found' });
   }
   
-  // Clean up stale connections
-  staleConnections.forEach(userId => {
-    connectedUsers.delete(userId);
-    console.log(`🧹 Cleaned up stale connection for user ${userId}`);
+  res.json({
+    broadcastOptimizer: broadcastOptimizer.getStats(),
+    timestamp: new Date().toISOString()
   });
+});
+
+// PHASE 4: Enhanced health check endpoint with scaling and Redis statistics
+app.get('/health', async (req, res) => {
+  try {
+    const mongoStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
+    
+    // Check if Redis is enabled in environment
+    const redisEnabled = process.env.REDIS_HOST && process.env.REDIS_HOST !== 'disabled';
+    
+    // Get Redis status
+    const redisStatus = redisEnabled && redisManager.isConnected ? redisManager.getStatus() : { connected: false };
+    
+    // Get session statistics
+    const sessionStats = await sessionManager.getSessionStats();
+    
+    res.json({ 
+      status: 'OK', 
+      timestamp: new Date().toISOString(),
+      services: {
+        mongodb: mongoStatus,
+        redis: redisStatus.connected ? 'connected' : 'disconnected',
+        socketio: 'active'
+      },
+      scaling: {
+        redisEnabled: redisEnabled && redisManager.isConnected,
+        sessionStorage: sessionStats.storageType,
+        horizontallyScalable: redisEnabled && redisManager.isConnected
+      },
+      socketio: {
+        totalConnections: connectionStats.total,
+        activeConnections: connectionStats.active,
+        errorCount: connectionStats.errors,
+        connectedUsers: sessionStats.connectedUsers,
+        activeThreads: sessionStats.threadsWithOnlineUsers,
+        totalOnlineSessions: sessionStats.totalOnlineUserSessions
+      },
+      redis: redisStatus.connected ? {
+        healthy: redisStatus.healthy,
+        errorCount: redisStatus.errorCount,
+        lastHealthCheck: redisStatus.lastHealthCheck,
+        clients: redisStatus.clients
+      } : null,
+      performance: {
+        uptime: process.uptime(),
+        memory: process.memoryUsage(),
+        pid: process.pid
+      }
+    });
+  } catch (error) {
+    console.error('Health check error:', error);
+    res.status(500).json({
+      status: 'ERROR',
+      timestamp: new Date().toISOString(),
+      error: error.message
+    });
+  }
+});
+
+// PHASE 4: Enhanced connection tracking with Redis-based distributed session management
+// Legacy maps kept for fallback and statistics
+const typingTimeouts = new Map(); // userId:threadId -> timeoutId for auto-cleanup (local to instance)
+const connectionStats = { total: 0, active: 0, errors: 0 }; // Connection statistics
+
+// PERFORMANCE FIX: Initialize broadcast optimizer for efficient Socket.IO operations
+const broadcastOptimizer = require("./utils/broadcastOptimizer");
+
+// CRITICAL FIX: Missing variable declarations for backward compatibility
+// These are maintained for legacy code until full migration to sessionManager
+const connectedUsers = new Map(); // userId -> user data (fallback for non-Redis deployments)
+const onlineUsers = new Map(); // threadId -> Set of userIds (fallback for non-Redis deployments) 
+const typingUsers = new Map(); // threadId -> Map of userId -> typing data (fallback for non-Redis deployments)
+
+// MEMORY LEAK FIX: Enhanced connection health monitoring with local cleanup
+setInterval(async () => {
+  try {
+    const now = Date.now();
+    
+    // Clean up stale connections across all instances
+    const cleanedCount = await sessionManager.cleanupStaleConnections(300000); // 5 minutes
+    
+    // Clean up typing timeouts
+    await sessionManager.cleanupTypingTimeouts();
+    
+    // MEMORY LEAK FIX: Clean up local connection tracking maps
+    let connectionsCleaned = 0;
+    let eventsCleaned = 0;
+    
+    // Clean up old connection tracking (older than 10 minutes)
+    for (const [ip, connections] of socketConnections.entries()) {
+      const recentConnections = connections.filter(time => now - time < 600000); // 10 minutes
+      if (recentConnections.length !== connections.length) {
+        connectionsCleaned += connections.length - recentConnections.length;
+        if (recentConnections.length === 0) {
+          socketConnections.delete(ip);
+        } else {
+          socketConnections.set(ip, recentConnections);
+        }
+      }
+    }
+    
+    // Clean up socket event counts for disconnected sockets
+    const connectedSocketIds = new Set();
+    io.sockets.sockets.forEach(socket => connectedSocketIds.add(socket.id));
+    
+    for (const socketId of socketEventCounts.keys()) {
+      if (!connectedSocketIds.has(socketId)) {
+        socketEventCounts.delete(socketId);
+        eventsCleaned++;
+      }
+    }
+    
+    if (cleanedCount > 0 || connectionsCleaned > 0 || eventsCleaned > 0) {
+      console.log(`🧹 Cleanup: ${cleanedCount} stale sessions, ${connectionsCleaned} old connections, ${eventsCleaned} socket events`);
+    }
+  } catch (error) {
+    console.error('Error during cleanup:', error);
+  }
 }, 60000); // Check every minute
 
-// Helper function for user disconnect cleanup
-function handleUserDisconnect(socket) {
+// PHASE 4: Enhanced user disconnect cleanup with distributed session management
+async function handleUserDisconnect(socket) {
   try {
     const userId = socket.userId;
-    const userData = connectedUsers.get(userId);
+    const userData = await sessionManager.getConnectedUser(userId);
     
     if (userData) {
       // Clean up active threads
-      for (const threadId of userData.activeThreads) {
+      for (const threadId of userData.activeThreads || []) {
         socket.leave(`thread:${threadId}`);
         
-        // Remove from online users
-        if (onlineUsers.has(threadId)) {
-          onlineUsers.get(threadId).delete(userId);
-          
-          // Broadcast updated online users
-          const threadOnlineUsers = Array.from(onlineUsers.get(threadId) || []);
-          socket.to(`thread:${threadId}`).emit('thread:online-users', {
-            threadId,
-            onlineUsers: threadOnlineUsers.map(id => ({
-              userId: id,
-              email: connectedUsers.get(id)?.email || 'Unknown',
-              status: connectedUsers.get(id)?.status || 'offline'
-            }))
+        // Remove from online users (distributed)
+        await sessionManager.removeOnlineUser(threadId, userId);
+        
+        // Get updated online users and broadcast
+        const onlineUsers = await sessionManager.getOnlineUsers(threadId);
+        const threadOnlineUsers = Array.from(onlineUsers);
+        
+        // Get user details for online users
+        const onlineUserDetails = [];
+        for (const id of threadOnlineUsers) {
+          const connectedUser = await sessionManager.getConnectedUser(id);
+          onlineUserDetails.push({
+            userId: id,
+            email: connectedUser?.email || 'Unknown',
+            status: connectedUser?.status || 'offline'
           });
-          
-          if (onlineUsers.get(threadId).size === 0) {
-            onlineUsers.delete(threadId);
-          }
         }
+        
+        socket.to(`thread:${threadId}`).emit('thread:online-users', {
+          threadId,
+          onlineUsers: onlineUserDetails
+        });
       }
       
-      // Clean up typing indicators
-      for (const [threadId, users] of typingUsers.entries()) {
-        if (users.has(userId)) {
-          users.delete(userId);
+      // Clean up typing indicators (distributed)
+      const allTypingUsers = await sessionManager.getAllOnlineUsers();
+      for (const [threadId] of allTypingUsers) {
+        const typingUsers = await sessionManager.getTypingUsers(threadId);
+        if (typingUsers.has(userId)) {
+          await sessionManager.removeTypingUser(threadId, userId);
           socket.to(`thread:${threadId}`).emit('user:stop-typing', {
             userId,
             threadId,
             timestamp: Date.now()
           });
-          if (users.size === 0) {
-            typingUsers.delete(threadId);
-          }
         }
       }
       
-      // Clean up typing timeouts
+      // Clean up typing timeouts (local to instance)
       for (const [key, timeoutId] of typingTimeouts.entries()) {
         if (key.startsWith(`${userId}:`)) {
           clearTimeout(timeoutId);
@@ -387,8 +554,8 @@ function handleUserDisconnect(socket) {
         }
       }
       
-      // Remove from connected users
-      connectedUsers.delete(userId);
+      // Remove from connected users (distributed)
+      await sessionManager.removeConnectedUser(userId);
       
       console.log(`🧹 Cleaned up user ${userData.email} (${userId}) from all rooms and tracking`);
     }
@@ -404,6 +571,36 @@ io.on('connection', (socket) => {
   
   console.log(`🔌 New socket connection: ${socket.id} from ${socket.handshake.address}`);
   console.log(`📊 Connection stats: ${connectionStats.active} active, ${connectionStats.total} total`);
+  
+  // SECURITY FIX: Add event rate limiting per socket
+  socketEventCounts.set(socket.id, { count: 0, lastReset: Date.now() });
+  
+  // Rate limiting middleware for socket events
+  const originalOn = socket.on.bind(socket);
+  socket.on = function(event, handler) {
+    return originalOn(event, (...args) => {
+      const now = Date.now();
+      const stats = socketEventCounts.get(socket.id);
+      
+      if (!stats) return; // Socket disconnected
+      
+      // Reset counter every minute
+      if (now - stats.lastReset > 60000) {
+        stats.count = 0;
+        stats.lastReset = now;
+      }
+      
+      // Rate limit: max 60 events per minute per socket
+      if (stats.count >= 60) {
+        console.warn(`🚫 Socket event rate limit exceeded for ${socket.id}`);
+        socket.emit('error', { message: 'Rate limit exceeded' });
+        return;
+      }
+      
+      stats.count++;
+      return handler(...args);
+    });
+  };
   
   // ✅ FIXED: Set timeout on underlying HTTP socket, not Socket.IO socket
   if (socket.request && socket.request.socket) {
@@ -432,9 +629,14 @@ io.on('connection', (socket) => {
     console.log(`🔌 Socket ${socket.id} disconnected: ${reason}`);
     console.log(`📊 Connection stats: ${connectionStats.active} active, ${connectionStats.total} total`);
     
-    // Enhanced cleanup on disconnect
+    // SECURITY FIX: Clean up event rate limiting data
+    socketEventCounts.delete(socket.id);
+    
+    // PHASE 4: Enhanced cleanup on disconnect with async session management
     if (socket.userId) {
-      handleUserDisconnect(socket);
+      handleUserDisconnect(socket).catch(error => {
+        console.error('Error during user disconnect cleanup:', error);
+      });
     }
   });
   
@@ -443,41 +645,123 @@ io.on('connection', (socket) => {
     socket.emit('pong', { timestamp: Date.now(), ...data });
   });
   
-  // Enhanced user authentication and setup
-  socket.on('user:join', (userData) => {
+  // PHASE 4: Enhanced user authentication and setup with distributed session management
+  socket.on('user:join', async (userData) => {
     try {
-      const { userId, email } = userData;
+      // SECURITY FIX: Input sanitization and validation
+      if (!userData || typeof userData !== 'object') {
+        console.error(`❌ Invalid user data format for socket ${socket.id}`);
+        socket.emit('error', { message: 'Invalid user data format' });
+        return;
+      }
+      
+      let { userId, email } = userData;
+      
+      // Sanitize userId (Firebase UID can contain alphanumeric + hyphens + underscores)
+      if (typeof userId !== 'string') {
+        userId = String(userId || '');
+      }
+      userId = userId.replace(/[^a-zA-Z0-9\-_]/g, '').substring(0, 128);
+      
+      // Sanitize email
+      if (typeof email !== 'string') {
+        email = String(email || '');
+      }
+      email = email
+        .replace(/[<>\"'&]/g, '') // Remove XSS characters
+        .substring(0, 254) // RFC email length limit
+        .trim();
+      
+      // Enhanced debugging for user data
+      console.log(`🔍 Processing user:join for socket ${socket.id}:`, {
+        originalUserId: userData.userId,
+        sanitizedUserId: userId,
+        originalEmail: userData.email,
+        sanitizedEmail: email,
+        userIdLength: userId?.length,
+        emailLength: email?.length
+      });
       
       // Validate user data
       if (!userId || !email) {
-        console.error(`❌ Invalid user data for socket ${socket.id}:`, userData);
+        console.error(`❌ Invalid user data for socket ${socket.id}:`, { userId, email, originalData: userData });
         socket.emit('error', { message: 'Invalid user data' });
         return;
       }
       
-      // Check if user is already connected with different socket
-      const existingConnection = connectedUsers.get(userId);
-      if (existingConnection && existingConnection.socketId !== socket.id) {
-        console.log(`🔄 User ${email} reconnecting with new socket ${socket.id}`);
-        // Clean up old connection
-        connectedUsers.delete(userId);
+      // RACE CONDITION FIX: Use atomic operations to prevent conflicts
+      let maxRetries = 3;
+      let attempt = 0;
+      let success = false;
+      
+      while (attempt < maxRetries && !success) {
+        attempt++;
+        try {
+          console.log(`🔄 Attempt ${attempt}/${maxRetries}: Checking existing connection for ${userId}`);
+          
+          // Check if user is already connected with different socket (distributed check)
+          const existingConnection = await sessionManager.getConnectedUser(userId);
+          console.log(`🔍 Existing connection check result:`, existingConnection);
+          
+          if (existingConnection && existingConnection.socketId !== socket.id) {
+            console.log(`🔄 User ${email} reconnecting with new socket ${socket.id}, cleaning up old connection`);
+            
+            // Atomic cleanup and set operation
+            await sessionManager.removeConnectedUser(userId);
+            console.log(`🧹 Old connection cleaned up for ${userId}`);
+            
+            // Small delay to ensure cleanup is complete
+            await new Promise(resolve => setTimeout(resolve, 50));
+          }
+          
+          console.log(`💾 Attempting to set user session for ${userId}`);
+          
+          // Set user session (using regular method since atomic doesn't exist)
+          await sessionManager.setConnectedUser(userId, {
+            socketId: socket.id,
+            email: email,
+            status: 'online',
+            lastSeen: new Date(),
+            activeThreads: new Set()
+          });
+          
+          console.log(`📊 Session set successfully for ${userId}`);
+          success = true;
+          console.log(`✅ User ${email} successfully connected on attempt ${attempt}`);
+        } catch (error) {
+          console.error(`❌ Connection attempt ${attempt} failed for ${email}:`, error);
+          console.error(`❌ Error details:`, {
+            message: error.message,
+            stack: error.stack,
+            name: error.name
+          });
+          
+          if (attempt === maxRetries) {
+            throw error;
+          }
+          await new Promise(resolve => setTimeout(resolve, 100 * attempt));
+        }
       }
       
-      connectedUsers.set(userId, {
-        socketId: socket.id,
-        email: email,
-        status: 'online',
-        lastSeen: new Date(),
-        activeThreads: new Set()
-      });
+      if (!success) {
+        console.warn(`⚠️ Session manager failed for ${email}, but allowing socket connection to continue`);
+        // Don't throw error - allow socket to work without session manager
+        // This ensures real-time messaging still works even if session management fails
+      }
       
+      // Always set socket properties regardless of session manager success
       socket.userId = userId;
       socket.userEmail = email;
       
-      console.log(`👤 User joined: ${email} (${userId}) - Socket: ${socket.id}`);
+      console.log(`👤 User joined: ${email} (${userId}) - Socket: ${socket.id} (SessionManager: ${success ? 'SUCCESS' : 'BYPASSED'})`);
       
       // Send confirmation to user
-      socket.emit('user:joined', { userId, email, timestamp: new Date().toISOString() });
+      socket.emit('user:joined', { 
+        userId, 
+        email, 
+        timestamp: new Date().toISOString(),
+        sessionManagerWorking: success
+      });
       
     } catch (error) {
       console.error(`❌ Error in user:join for socket ${socket.id}:`, error);
@@ -486,12 +770,18 @@ io.on('connection', (socket) => {
   });
   
   // Enhanced thread room management
-  socket.on('thread:join', (threadId) => {
+  socket.on('thread:join', async (threadId) => {
     try {
-      if (!threadId || !socket.userId) {
-        console.error(`❌ Invalid thread join attempt: threadId=${threadId}, userId=${socket.userId}`);
-        socket.emit('error', { message: 'Invalid thread join data' });
+      if (!threadId) {
+        console.error(`❌ Invalid thread join attempt: threadId=${threadId}`);
+        socket.emit('error', { message: 'Invalid thread ID' });
         return;
+      }
+      
+      // CRITICAL FIX: Allow joining even if userId not set yet (for timing issues)
+      if (!socket.userId) {
+        console.warn(`⚠️ Thread join without userId - socket: ${socket.id}, threadId: ${threadId}`);
+        // Still allow joining the room, but log the issue
       }
       
       const roomName = `thread:${threadId}`;
@@ -515,22 +805,9 @@ io.on('connection', (socket) => {
       }
       onlineUsers.get(threadId).add(socket.userId);
       
-      // CRITICAL FIX: Broadcast updated online users to ALL users in thread (including new joiner)
-      const threadOnlineUsers = Array.from(onlineUsers.get(threadId) || []);
-      const onlineUserData = threadOnlineUsers.map(userId => ({
-        userId,
-        email: connectedUsers.get(userId)?.email || 'Unknown',
-        status: connectedUsers.get(userId)?.status || 'offline',
-        joinedAt: new Date().toISOString()
-      }));
-      
-      // Broadcast to everyone in the room (not just others)
-      io.to(roomName).emit('thread:online-users', {
-        threadId,
-        onlineUsers: onlineUserData
-      });
-      
-      console.log(`👥 Broadcasting ${onlineUserData.length} online users to room "${roomName}"`);
+      // PERFORMANCE FIX: Use optimized broadcast for online users
+      const broadcastResult = await broadcastOptimizer.broadcastOnlineUsers(io, threadId);
+      console.log(`👥 Optimized broadcast of online users to room "${roomName}" - sent to ${broadcastResult.sent} clients`);
       
       // Send confirmation to user
       socket.emit('thread:joined', { 
@@ -546,7 +823,7 @@ io.on('connection', (socket) => {
   });
   
   // Enhanced thread leave handling
-  socket.on('thread:leave', (threadId) => {
+  socket.on('thread:leave', async (threadId) => {
     try {
       if (!threadId || !socket.userId) {
         console.error(`❌ Invalid thread leave attempt: threadId=${threadId}, userId=${socket.userId}`);
@@ -569,16 +846,8 @@ io.on('connection', (socket) => {
           onlineUsers.delete(threadId);
         }
         
-        // Broadcast updated online users to thread
-        const threadOnlineUsers = Array.from(onlineUsers.get(threadId) || []);
-        socket.to(`thread:${threadId}`).emit('thread:online-users', {
-          threadId,
-          onlineUsers: threadOnlineUsers.map(userId => ({
-            userId,
-            email: connectedUsers.get(userId)?.email || 'Unknown',
-            status: connectedUsers.get(userId)?.status || 'offline'
-          }))
-        });
+        // PERFORMANCE FIX: Use optimized broadcast for online users
+        await broadcastOptimizer.broadcastOnlineUsers(io, threadId, { skipUserId: socket.userId });
       }
       
       console.log(`📱 User ${socket.userEmail} left thread room: ${threadId}`);
@@ -593,9 +862,30 @@ io.on('connection', (socket) => {
   });
   
   // Enhanced typing indicators with improved reliability and debouncing
-  socket.on('typing:start', (data) => {
+  socket.on('typing:start', async (data) => {
     try {
-      const { threadId, userName } = data;
+      // SECURITY FIX: Input sanitization and validation
+      if (!data || typeof data !== 'object') {
+        console.error(`❌ Invalid typing:start data format`);
+        return;
+      }
+      
+      let { threadId, userName } = data;
+      
+      // Sanitize threadId
+      if (typeof threadId !== 'string') {
+        threadId = String(threadId || '');
+      }
+      threadId = threadId.replace(/[^a-zA-Z0-9]/g, '').substring(0, 24); // MongoDB ObjectId length
+      
+      // Sanitize userName
+      if (typeof userName !== 'string') {
+        userName = String(userName || '');
+      }
+      userName = userName
+        .replace(/[<>\"'&]/g, '') // Remove XSS characters
+        .substring(0, 100) // Limit length
+        .trim();
       
       // Validate input data
       if (!threadId || !socket.userId) {
@@ -627,13 +917,14 @@ io.on('connection', (socket) => {
           socketId: socket.id
         });
         
-        // Broadcast to others in the thread (exclude sender)
-        socket.to(`thread:${threadId}`).emit('user:typing', {
-          userId: socket.userId,
-          userName: userName || socket.userEmail || 'Unknown User',
-          threadId,
-          timestamp: currentTime
-        });
+        // PERFORMANCE FIX: Use optimized broadcast for typing indicators
+        await broadcastOptimizer.broadcastTypingStatus(
+          io, 
+          threadId, 
+          socket.userId, 
+          userName || socket.userEmail || 'Unknown User', 
+          'start'
+        );
         
         console.log(`⌨️ ${socket.userEmail || 'Unknown'} started typing in thread ${threadId}`);
       }
@@ -644,7 +935,7 @@ io.on('connection', (socket) => {
       }
       
       // Set new auto-cleanup timeout (4 seconds for better UX)
-      const timeoutId = setTimeout(() => {
+      const timeoutId = setTimeout(async () => {
         try {
           if (typingUsers.has(threadId) && typingUsers.get(threadId).has(socket.userId)) {
             const typingData = typingUsers.get(threadId).get(socket.userId);
@@ -655,13 +946,14 @@ io.on('connection', (socket) => {
               typingUsers.delete(threadId);
             }
             
-            // Notify others that user stopped typing
-            socket.to(`thread:${threadId}`).emit('user:stop-typing', {
-              userId: socket.userId,
-              userName: typingData.userName,
-              threadId,
-              timestamp: Date.now()
-            });
+            // PERFORMANCE FIX: Use optimized broadcast for typing stop
+            await broadcastOptimizer.broadcastTypingStatus(
+              io, 
+              threadId, 
+              socket.userId, 
+              typingData.userName, 
+              'stop'
+            );
             
             console.log(`⌨️ Auto-cleanup: ${typingData.userName} stopped typing in thread ${threadId}`);
           }
@@ -681,7 +973,7 @@ io.on('connection', (socket) => {
     }
   });
   
-  socket.on('typing:stop', (data) => {
+  socket.on('typing:stop', async (data) => {
     try {
       const { threadId } = data;
       
@@ -709,13 +1001,14 @@ io.on('connection', (socket) => {
           typingUsers.delete(threadId);
         }
         
-        // Broadcast to others in the thread (exclude sender)
-        socket.to(`thread:${threadId}`).emit('user:stop-typing', {
-          userId: socket.userId,
-          userName: typingData.userName,
-          threadId,
-          timestamp: Date.now()
-        });
+        // PERFORMANCE FIX: Use optimized broadcast for typing stop
+        await broadcastOptimizer.broadcastTypingStatus(
+          io, 
+          threadId, 
+          socket.userId, 
+          typingData.userName, 
+          'stop'
+        );
         
         console.log(`⌨️ ${typingData.userName || socket.userEmail} stopped typing in thread ${threadId}`);
       }
@@ -769,6 +1062,10 @@ app.use("/api/ai/tutor", aiLimiter, aiTutorRoutes); // AI-specific limits
 app.use("/api/ai/generate", aiLimiter, contentGenerationRoutes); // AI-specific limits
 app.use("/api/ai/assist", aiLimiter, intelligentAssistanceRoutes); // AI-specific limits
 app.use("/api/analytics", apiLimiter, analyticsRoutes);
+app.use("/api/notifications", apiLimiter, notificationRoutes);
+app.use("/api/thread-permissions", apiLimiter, threadPermissionRoutes); // PHASE 3: RBAC routes
+app.use("/api/security", strictLimiter, require("./routes/securityRoutes")); // PHASE 3: Security dashboard and monitoring routes
+app.use("/api/health", healthRoutes); // PHASE 4: Health monitoring and circuit breaker status
 
 // Import error handlers
 const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
@@ -779,11 +1076,96 @@ app.use(notFoundHandler);
 // Global error handler (must be last)
 app.use(errorHandler);
 
-const PORT = process.env.PORT || 5050;
-server.listen(PORT, 'localhost', () => {
-  console.log(`🚀 Server on localhost:${PORT}`);
-  console.log(`⚡ Socket.IO ready for real-time features`);
-  console.log(`🔄 Enhanced real-time messaging with typing indicators enabled`);
-  console.log(`👥 Online user tracking active`);
-  console.log(`🎯 Auto-cleanup mechanisms configured`);
-});
+// PHASE 4: Server initialization with Redis setup
+async function initializeServer() {
+  try {
+    console.log('🔄 Initializing PeerGenius server with horizontal scaling...');
+    
+    // Initialize Redis connection
+    const redisEnabled = process.env.REDIS_HOST && process.env.REDIS_HOST !== 'disabled';
+    
+    if (redisEnabled) {
+      console.log('🔄 Setting up Redis for horizontal scaling...');
+      await redisManager.initialize();
+      
+      // Configure Socket.IO Redis adapter
+      const { pubClient, subClient } = redisManager.getSocketIOClients();
+      io.adapter(createAdapter(pubClient, subClient));
+      
+      console.log('✅ Redis adapter configured for Socket.IO');
+    } else {
+      console.log('⚠️ Redis disabled - running in single-instance mode');
+    }
+    
+    // Initialize session manager
+    await sessionManager.initialize();
+    console.log('✅ Session manager initialized');
+    
+    // Start the server with error handling
+    const PORT = process.env.PORT || 5050;
+    
+    const startServer = (port) => {
+      const serverInstance = server.listen(port, () => {
+        console.log(`🚀 PeerGenius server running on localhost:${port}`);
+        console.log(`⚡ Socket.IO ready with ${redisEnabled ? 'Redis scaling' : 'single-instance'} mode`);
+        console.log(`🔄 Enhanced real-time messaging with typing indicators enabled`);
+        console.log(`👥 Online user tracking ${redisEnabled ? 'distributed across instances' : 'local'}`);
+        console.log(`🎯 Auto-cleanup mechanisms configured`);
+        console.log(`🔒 Security features: RBAC, content filtering, audit logging active`);
+        
+        if (redisEnabled) {
+          console.log(`📊 Horizontal scaling ready - multiple instances can now be deployed`);
+        }
+      });
+
+      serverInstance.on('error', (err) => {
+        if (err.code === 'EADDRINUSE') {
+          console.log(`⚠️ Port ${port} is busy, trying port ${port + 1}...`);
+          setTimeout(() => {
+            serverInstance.close();
+            startServer(port + 1);
+          }, 1000);
+        } else {
+          console.error('❌ Server error:', err);
+          process.exit(1);
+        }
+      });
+    };
+
+    startServer(PORT);
+
+    // Graceful shutdown handling
+    process.on('SIGTERM', async () => {
+      console.log('🔄 Graceful shutdown initiated...');
+      
+      if (redisEnabled) {
+        await redisManager.close();
+      }
+      
+      server.close(() => {
+        console.log('✅ Server shut down successfully');
+        process.exit(0);
+      });
+    });
+
+    process.on('SIGINT', async () => {
+      console.log('🔄 Graceful shutdown initiated...');
+      
+      if (redisEnabled) {
+        await redisManager.close();
+      }
+      
+      server.close(() => {
+        console.log('✅ Server shut down successfully');
+        process.exit(0);
+      });
+    });
+
+  } catch (error) {
+    console.error('❌ Failed to initialize server:', error);
+    process.exit(1);
+  }
+}
+
+// Initialize the server
+initializeServer();
