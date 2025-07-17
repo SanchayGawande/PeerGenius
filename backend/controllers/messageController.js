@@ -283,10 +283,9 @@ const postMessage = async (req, res) => {
     // Build conversation context with proper formatting
     const conversationHistory = messages.map(msg => {
       const role = msg.messageType === 'ai' ? 'assistant' : 'user';
-      const sender = msg.messageType === 'ai' ? 'AI Assistant' : msg.senderEmail;
       return {
         role,
-        content: `${sender}: ${msg.text}`
+        content: msg.text // Don't add sender prefix - the role already indicates who's speaking
       };
     });
 

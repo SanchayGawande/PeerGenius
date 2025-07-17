@@ -18,33 +18,44 @@ const {
 
 // Basic thread operations
 router.get("/", verifyToken, getThreads);
-// Allow public threads to be viewed without authentication
-const optionalAuth = (req, res, next) => {
+// Secure optional authentication middleware
+const optionalAuth = async (req, res, next) => {
   const authHeader = req.headers.authorization;
+  
   if (authHeader?.startsWith("Bearer ")) {
     const idToken = authHeader.split(" ")[1];
-    if (idToken) {
-      // Try to verify token but don't fail if it's invalid
-      admin.auth().verifyIdToken(idToken)
-        .then(decoded => {
-          req.user = decoded;
-          next();
-        })
-        .catch(err => {
-          console.warn("Optional auth failed:", err.message);
-          // Set a default user for anonymous access
-          req.user = { uid: "anonymous", email: "anonymous@example.com" };
-          next();
-        });
+    if (idToken && idToken.length > 10) { // Basic token format validation
+      try {
+        // Verify token with strict validation
+        const decoded = await admin.auth().verifyIdToken(idToken, true);
+        req.user = decoded;
+        req.isAuthenticated = true;
+        console.log("✅ Authenticated user accessing public threads:", decoded.uid);
+      } catch (err) {
+        console.warn("⚠️ Invalid token provided for public access:", err.code);
+        // For public endpoints, continue as unauthenticated - don't return 401
+        req.user = null;
+        req.isAuthenticated = false;
+        
+        // Don't return error for public endpoints with expired/invalid tokens
+        if (err.code === 'auth/id-token-expired' || 
+            err.code === 'auth/argument-error' || 
+            err.code === 'auth/invalid-argument' ||
+            err.code === 'auth/id-token-revoked') {
+          console.log("🌐 Continuing as anonymous user for public endpoint");
+        }
+      }
     } else {
-      req.user = { uid: "anonymous", email: "anonymous@example.com" };
-      next();
+      req.user = null;
+      req.isAuthenticated = false;
     }
   } else {
-    // No auth header, proceed as anonymous
-    req.user = { uid: "anonymous", email: "anonymous@example.com" };
-    next();
+    // No auth provided, continue as unauthenticated
+    req.user = null;
+    req.isAuthenticated = false;
   }
+  
+  next();
 };
 
 router.get("/public", optionalAuth, getPublicThreads);

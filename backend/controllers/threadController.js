@@ -367,31 +367,21 @@ const leaveThread = asyncHandler(async (req, res) => {
 
 // CRITICAL FIX: Get public threads with enhanced reliability, caching and retry logic
 const getPublicThreads = asyncHandler(async (req, res) => {
-  // CRITICAL FIX: Add comprehensive error logging and validation
+  // CRITICAL FIX: Allow both authenticated and anonymous access for public threads
   try {
-    // Validate authentication data
-    if (!req.user) {
-      console.error('❌ No user data in request - authentication middleware failed');
-      return res.status(401).json({ error: 'Authentication required' });
-    }
+    // Optional authentication - can work with or without user
+    const userId = req.user?.uid;
+    const userEmail = req.user?.email;
+    const isAuthenticated = req.isAuthenticated || false;
     
-    const userId = req.user.uid;
-    const userEmail = req.user.email;
+    console.log(`🌐 Public threads request - Authenticated: ${isAuthenticated}, User: ${userId || 'anonymous'}`);
     
-    if (!userId) {
-      console.error('❌ No userId in req.user:', req.user);
-      return res.status(400).json({ error: 'Invalid user data - missing UID' });
-    }
+    // No authentication required for public threads - continue with optional user context
     
-    if (!userEmail) {
-      console.error('❌ No userEmail in req.user:', req.user);
-      return res.status(400).json({ error: 'Invalid user data - missing email' });
-    }
-    
-    console.log(`🌍 Getting public threads for user ${userId} (${userEmail})`);
+    console.log(`🌍 Getting public threads for user ${userId || 'anonymous'} (${userEmail || 'no email'})`);
   
   // Enhanced caching and retry configuration
-  const cacheKey = `public_threads:${userId}`;
+  const cacheKey = `public_threads:${userId || 'anonymous'}`;
   const retryAttempts = 3;
   const retryDelay = 1000; // Start with 1 second
   
@@ -410,7 +400,8 @@ const getPublicThreads = asyncHandler(async (req, res) => {
         {
           $match: {
             isPublic: true,
-            "participants.userId": { $ne: userId === "anonymous" ? null : userId },
+            // For anonymous users, don't filter by participants
+            ...(userId ? { "participants.userId": { $ne: userId } } : {}),
             isArchived: { $ne: true }
           }
         },
@@ -478,7 +469,7 @@ const getPublicThreads = asyncHandler(async (req, res) => {
       // Success response with cache headers
       res.set({
         'Cache-Control': 'public, max-age=60', // Cache for 1 minute
-        'ETag': `"public-threads-${userId}-${Date.now()}"`,
+        'ETag': `"public-threads-${userId || 'anonymous'}-${Date.now()}"`,
         'X-Response-Time': Date.now() - new Date().getTime()
       });
       
