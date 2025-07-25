@@ -4,13 +4,11 @@ const mongoose = require('mongoose');
 const aiInteractionSchema = new mongoose.Schema({
   userId: {
     type: String,
-    required: true,
-    index: true
+    required: true
   },
   
   threadId: {
-    type: String,
-    index: true
+    type: String
   },
   
   // Interaction details
@@ -180,8 +178,7 @@ const aiInteractionSchema = new mongoose.Schema({
   
   // Session information
   sessionId: {
-    type: String,
-    index: true
+    type: String
   },
   
   sessionSequence: {
@@ -216,7 +213,8 @@ const aiInteractionSchema = new mongoose.Schema({
   
 }, {
   timestamps: true,
-  collection: 'ai_interactions'
+  collection: 'ai_interactions',
+  suppressReservedKeysWarning: true
 });
 
 // Indexes for performance

@@ -2,10 +2,10 @@
 const express = require('express');
 const router = express.Router();
 const contentGenerationController = require('../controllers/contentGenerationController');
-const authMiddleware = require('../middleware/authMiddleware');
+const { verifyToken } = require('../middleware/authMiddleware');
 
 // Apply authentication middleware to all routes
-router.use(authMiddleware);
+router.use(verifyToken);
 
 // Content generation endpoints
 router.post('/study-guide', contentGenerationController.generateStudyGuide);

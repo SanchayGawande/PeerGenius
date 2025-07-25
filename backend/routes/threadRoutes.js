@@ -1,7 +1,7 @@
 // backend/routes/threadRoutes.js
 const express = require("express");
 const router = express.Router();
-const verifyToken = require("../middleware/authMiddleware");
+const { verifyToken } = require("../middleware/authMiddleware");
 const { validateCreateThread, validateObjectId } = require("../middleware/validation");
 const admin = require("../firebaseAdmin");
 const { 

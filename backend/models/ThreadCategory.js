@@ -45,8 +45,7 @@ const threadCategorySchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Index for efficient queries
-threadCategorySchema.index({ name: 1 });
+// Index for efficient queries (name already has unique index)
 threadCategorySchema.index({ isActive: 1, order: 1 });
 
 module.exports = mongoose.model("ThreadCategory", threadCategorySchema);

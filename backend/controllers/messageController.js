@@ -1,9 +1,139 @@
 const Message = require("../models/Message");
+const Thread = require("../models/thread");
 const { shouldAIRespond } = require("../utils/aiDecisionEngine");
 const groqService = require("../services/groqService");
 const path = require("path");
 const fs = require("fs");
 const { isImage, getFileCategory, formatFileSize } = require("../middleware/upload");
+const { 
+  sanitizeSearchQuery, 
+  sanitizeMessageType, 
+  sanitizeDate, 
+  isValidObjectId,
+  sanitizeTextInput 
+} = require("../utils/inputSanitizer");
+
+// REFACTOR: Helper function for thread authorization
+const validateThreadAccess = async (threadId, userId, userEmail) => {
+  const thread = await Thread.findById(threadId).populate('category');
+  
+  if (!thread) {
+    return { authorized: false, thread: null, error: "Thread not found" };
+  }
+
+  let isParticipant = thread.participants.some(p => p.userId === userId);
+  
+  // Auto-fix: If user is the creator but not in participants, add them
+  if (!isParticipant && thread.createdBy === userId) {
+    console.log(`Auto-fixing: Adding thread creator ${userId} to participants`);
+    thread.participants.push({
+      userId,
+      email: userEmail,
+      role: 'owner',
+      joinedAt: new Date()
+    });
+    await thread.save();
+    isParticipant = true;
+  }
+  
+  if (!isParticipant) {
+    return { authorized: false, thread, error: "Not authorized to post in this thread" };
+  }
+  
+  return { authorized: true, thread, error: null };
+};
+
+// REFACTOR: Helper function for creating and saving user message
+const createUserMessage = async (threadId, senderId, senderEmail, content) => {
+  // Save user message with sanitized content
+  const userMessage = await Message.create({
+    threadId,
+    sender: senderId,
+    senderEmail: senderEmail,
+    text: content,
+    messageType: 'user'
+  });
+
+  // Update thread activity and message count
+  await Thread.findByIdAndUpdate(threadId, {
+    lastActivity: new Date(),
+    $inc: { messageCount: 1 }
+  });
+
+  return userMessage;
+};
+
+// REFACTOR: Helper function for Socket.IO broadcasting
+const broadcastMessage = (io, threadId, message, messageType) => {
+  if (!io) return;
+
+  const messageData = {
+    message: {
+      _id: message._id,
+      threadId: message.threadId,
+      sender: message.sender,
+      senderEmail: message.senderEmail,
+      text: message.text,
+      messageType: message.messageType,
+      createdAt: message.createdAt,
+      updatedAt: message.updatedAt
+    },
+    threadId: threadId,
+    messageType: messageType
+  };
+  
+  const roomName = `thread:${threadId}`;
+  io.to(roomName).emit('new-message', messageData);
+  
+  // Debug logging
+  const room = io.sockets.adapter.rooms.get(roomName);
+  const clientCount = room ? room.size : 0;
+  console.log(`📡 Broadcasted ${messageType} message to room "${roomName}" with ${clientCount} clients`);
+  
+  if (clientCount === 0) {
+    console.warn(`⚠️ No clients in room "${roomName}" - message may not be delivered!`);
+  }
+};
+
+// REFACTOR: Helper function for AI response generation
+const generateAIResponse = async (thread, aiContext, conversationHistory, threadId) => {
+  const systemPrompt = generateContextAwareSystemPrompt(thread, aiContext);
+  
+  console.log(`🤖 Generating AI response for thread ${threadId} with context: ${aiContext.behaviorMode}`);
+  
+  const aiResponseData = await groqService.generateResponse({
+    messages: conversationHistory,
+    model: "llama3-8b-8192",
+    maxTokens: getContextAwareTokenLimit(aiContext),
+    temperature: getContextAwareTemperature(aiContext),
+    systemPrompt: systemPrompt,
+    context: {
+      threadId: threadId,
+      behaviorMode: aiContext.behaviorMode,
+      responseType: aiContext.responseType,
+      safetyMode: true
+    }
+  });
+
+  const aiResponse = aiResponseData.content;
+
+  // Save AI response
+  const aiMessage = await Message.create({
+    threadId,
+    sender: "ai-assistant",
+    senderEmail: "AI Assistant",
+    text: aiResponse,
+    messageType: 'ai'
+  });
+
+  // Update thread activity for AI message
+  await Thread.findByIdAndUpdate(threadId, {
+    lastActivity: new Date(),
+    $inc: { messageCount: 1 }
+  });
+
+  return aiMessage;
+};
 
 // CRITICAL FIX: Enhanced AI Response Logic with Context Awareness
 const determineAIResponseNeed = async (thread, messageContent, messageHistory = []) => {
@@ -53,7 +183,6 @@ const getMessages = async (req, res) => {
       attempt++;
       
       // Verify user is participant in thread
-      const Thread = require("../models/thread");
       thread = await Thread.findById(threadId).populate('category');
       if (!thread) {
         return res.status(404).json({ message: "Thread not found" });
@@ -174,88 +303,52 @@ const getMessages = async (req, res) => {
   }
 };
 
-// Post a single user message and generate AI response
+// REFACTOR: Simplified post message function using helper functions
 const postMessage = async (req, res) => {
   const { threadId } = req.params;
   const { content } = req.body;
 
+  // SECURITY FIX: Enhanced input validation and sanitization
+  if (!isValidObjectId(threadId)) {
+    return res.status(400).json({ message: "Invalid thread ID format" });
+  }
+  
+  // Sanitize message content
+  const contentValidation = sanitizeTextInput(content, {
+    maxLength: 5000,
+    minLength: 1,
+    allowHtml: false,
+    trimWhitespace: true
+  });
+  
+  if (!contentValidation.isValid) {
+    return res.status(400).json({ 
+      message: "Invalid message content", 
+      error: contentValidation.error 
+    });
+  }
+  
+  const sanitizedContent = contentValidation.sanitized;
   const user = req.user;
   const senderName = user?.email || "Anonymous";
   const senderId = user?.uid;
 
   try {
-    // Verify user is participant in thread
-    const Thread = require("../models/thread");
-    const thread = await Thread.findById(threadId).populate('category');
-    if (!thread) {
-      return res.status(404).json({ message: "Thread not found" });
-    }
-
-    let isParticipant = thread.participants.some(p => p.userId === senderId);
-    
-    // Auto-fix: If user is the creator but not in participants, add them
-    if (!isParticipant && thread.createdBy === senderId) {
-      console.log(`Auto-fixing postMessage: Adding thread creator ${senderId} to participants`);
-      thread.participants.push({
-        userId: senderId,
-        email: senderName,
-        role: 'owner',
-        joinedAt: new Date()
-      });
-      await thread.save();
-      isParticipant = true;
+    // Validate thread access using helper function
+    const accessResult = await validateThreadAccess(threadId, senderId, senderName);
+    if (!accessResult.authorized) {
+      const statusCode = accessResult.error === "Thread not found" ? 404 : 403;
+      return res.status(statusCode).json({ message: accessResult.error });
     }
     
-    if (!isParticipant) {
-      return res.status(403).json({ message: "Not authorized to post in this thread" });
-    }
+    const thread = accessResult.thread;
 
-    // Save user message
-    const userMessage = await Message.create({
-      threadId,
-      sender: senderId,
-      senderEmail: senderName,
-      text: content,
-      messageType: 'user'
-    });
+    // Create and save user message using helper function
+    const userMessage = await createUserMessage(threadId, senderId, senderName, sanitizedContent);
 
-    // Update thread activity and message count
-    await Thread.findByIdAndUpdate(threadId, {
-      lastActivity: new Date(),
-      $inc: { messageCount: 1 }
-    });
-
-    // CRITICAL FIX: Broadcast new message to all users in the thread room via Socket.IO
+    // Broadcast user message using helper function
     const io = req.app.get('io');
-    if (io) {
-      const messageData = {
-        message: {
-          _id: userMessage._id,
-          threadId: userMessage.threadId,
-          sender: userMessage.sender,
-          senderEmail: userMessage.senderEmail,
-          text: userMessage.text,
-          messageType: userMessage.messageType,
-          createdAt: userMessage.createdAt,
-          updatedAt: userMessage.updatedAt
-        },
-        threadId: threadId,
-        messageType: 'user'
-      };
-      
-      // CRITICAL FIX: Only broadcast to thread room, not globally
-      const roomName = `thread:${threadId}`;
-      io.to(roomName).emit('new-message', messageData);
-      
-      // Debug logging to verify room broadcasting
-      const room = io.sockets.adapter.rooms.get(roomName);
-      const clientCount = room ? room.size : 0;
-      console.log(`📡 Broadcasted user message to room "${roomName}" with ${clientCount} clients`);
-      
-      if (clientCount === 0) {
-        console.warn(`⚠️ No clients in room "${roomName}" - message may not be delivered!`);
-      }
-    }
+    broadcastMessage(io, threadId, userMessage, 'user');
 
     // CRITICAL FIX: Get conversation context first for enhanced AI decision
     const recentMessages = await Message.find({ threadId })
@@ -263,9 +356,9 @@ const postMessage = async (req, res) => {
       .limit(20)
       .populate('threadId', 'title description');
     
-    // Check if AI should respond with enhanced context awareness
-    const aiDecision = await determineAIResponseNeed(thread, content, recentMessages);
-    console.log(`🤖 AI Response Decision: ${aiDecision.shouldRespond ? 'YES' : 'NO'} for message: "${content.substring(0, 50)}..."`); 
+    // Check if AI should respond with enhanced context awareness using sanitized content
+    const aiDecision = await determineAIResponseNeed(thread, sanitizedContent, recentMessages);
+    console.log(`🤖 AI Response Decision: ${aiDecision.shouldRespond ? 'YES' : 'NO'} for message: "${sanitizedContent.substring(0, 50)}..."`); 
     console.log(`🎯 AI Context: ${aiDecision.context.reason} | Mode: ${aiDecision.context.behaviorMode} | Type: ${aiDecision.context.responseType}`);
 
     if (!aiDecision.shouldRespond) {
@@ -289,73 +382,12 @@ const postMessage = async (req, res) => {
       };
     });
 
-    // Enhanced AI response generation with improved error handling
+    // Generate AI response using helper function
     try {
-      const systemPrompt = generateContextAwareSystemPrompt(thread, aiDecision.context);
-      
-      console.log(`🤖 Generating AI response for thread ${threadId} with context: ${aiDecision.context.behaviorMode}`);
-      
-      const aiResponseData = await groqService.generateResponse({
-        messages: conversationHistory,
-        model: "llama3-8b-8192",
-        maxTokens: getContextAwareTokenLimit(aiDecision.context),
-        temperature: getContextAwareTemperature(aiDecision.context),
-        systemPrompt: systemPrompt,
-        context: {
-          threadId: threadId,
-          behaviorMode: aiDecision.context.behaviorMode,
-          responseType: aiDecision.context.responseType,
-          safetyMode: true // Enable safety measures
-        }
-      });
+      const aiMessage = await generateAIResponse(thread, aiDecision.context, conversationHistory, threadId);
 
-      const aiResponse = aiResponseData.content;
-
-      // Save AI response
-      const aiMessage = await Message.create({
-        threadId,
-        sender: "ai-assistant",
-        senderEmail: "AI Assistant",
-        text: aiResponse,
-        messageType: 'ai'
-      });
-
-      // Update thread activity again for AI message
-      await Thread.findByIdAndUpdate(threadId, {
-        lastActivity: new Date(),
-        $inc: { messageCount: 1 }
-      });
-
-      // CRITICAL FIX: Broadcast AI message to all users in the thread room via Socket.IO
-      if (io) {
-        const aiMessageData = {
-          message: {
-            _id: aiMessage._id,
-            threadId: aiMessage.threadId,
-            sender: aiMessage.sender,
-            senderEmail: aiMessage.senderEmail,
-            text: aiMessage.text,
-            messageType: aiMessage.messageType,
-            createdAt: aiMessage.createdAt,
-            updatedAt: aiMessage.updatedAt
-          },
-          threadId: threadId,
-          messageType: 'ai'
-        };
-        
-        // CRITICAL FIX: Only broadcast to thread room, not globally
-        const roomName = `thread:${threadId}`;
-        io.to(roomName).emit('new-message', aiMessageData);
-        
-        // Debug logging to verify room broadcasting
-        const room = io.sockets.adapter.rooms.get(roomName);
-        const clientCount = room ? room.size : 0;
-        console.log(`📡 Broadcasted AI message to room "${roomName}" with ${clientCount} clients`);
-        
-        if (clientCount === 0) {
-          console.warn(`⚠️ No clients in room "${roomName}" - AI message may not be delivered!`);
-        }
-      }
+      // Broadcast AI message using helper function
+      broadcastMessage(io, threadId, aiMessage, 'ai');
 
       // Return both user message and AI response with context
       res.status(201).json({ 
@@ -381,7 +413,6 @@ const summarizeThread = async (req, res) => {
 
   try {
     // Verify user is participant in thread
-    const Thread = require("../models/thread");
     const thread = await Thread.findById(threadId).populate('category');
     if (!thread) {
       return res.status(404).json({ message: "Thread not found" });
@@ -493,7 +524,6 @@ const addReaction = async (req, res) => {
     }
 
     // Check if user is participant in the thread
-    const Thread = require("../models/thread");
     const thread = await Thread.findById(message.threadId);
     if (!thread) {
       return res.status(404).json({ message: "Thread not found" });
@@ -560,13 +590,37 @@ const uploadFiles = async (req, res) => {
   const { content = "" } = req.body;
   const files = req.files;
 
+  // SECURITY FIX: Validate inputs
+  if (!isValidObjectId(threadId)) {
+    return res.status(400).json({ message: "Invalid thread ID format" });
+  }
+
+  // Sanitize content if provided
+  let sanitizedContent = "";
+  if (content && content.trim()) {
+    const contentValidation = sanitizeTextInput(content, {
+      maxLength: 1000,
+      minLength: 0,
+      allowHtml: false,
+      trimWhitespace: true
+    });
+    
+    if (!contentValidation.isValid) {
+      return res.status(400).json({ 
+        message: "Invalid message content", 
+        error: contentValidation.error 
+      });
+    }
+    
+    sanitizedContent = contentValidation.sanitized;
+  }
+
   const user = req.user;
   const senderName = user?.email || "Anonymous";
   const senderId = user?.uid;
 
   try {
     // Verify user is participant in thread
-    const Thread = require("../models/thread");
     const thread = await Thread.findById(threadId).populate('category');
     if (!thread) {
       return res.status(404).json({ message: "Thread not found" });
@@ -615,12 +669,12 @@ const uploadFiles = async (req, res) => {
       }
     }
 
-    // Create message with attachments
+    // Create message with attachments using sanitized content
     const message = await Message.create({
       threadId,
       sender: senderId,
       senderEmail: senderName,
-      text: content.trim() || (attachments.length > 0 ? `Shared ${attachments.length} file(s)` : ""),
+      text: sanitizedContent || (attachments.length > 0 ? `Shared ${attachments.length} file(s)` : ""),
       messageType: 'user',
       attachments: attachments
     });
@@ -676,7 +730,6 @@ const downloadFile = async (req, res) => {
     }
 
     // Verify user is participant in thread
-    const Thread = require("../models/thread");
     const thread = await Thread.findById(message.threadId);
     if (!thread) {
       return res.status(404).json({ message: "Thread not found" });
@@ -713,88 +766,6 @@ const downloadFile = async (req, res) => {
   }
 };
 
-// Search messages within a thread
-const searchMessages = async (req, res) => {
-  const { threadId } = req.params;
-  const { 
-    query, 
-    page = 1, 
-    limit = 20,
-    messageType,
-    dateFrom,
-    dateTo,
-    authorId
-  } = req.query;
-  
-  const userId = req.user.uid;
-
-  try {
-    // Verify user is participant in thread
-    const Thread = require("../models/thread");
-    const thread = await Thread.findById(threadId).populate('category');
-    if (!thread) {
-      return res.status(404).json({ message: "Thread not found" });
-    }
-
-    const isParticipant = thread.participants.some(p => p.userId === userId);
-    if (!isParticipant) {
-      return res.status(403).json({ message: "Not authorized to search messages in this thread" });
-    }
-
-    // Build search filter
-    const filter = { threadId };
-    
-    // Text search
-    if (query && query.trim()) {
-      filter.text = { $regex: query.trim(), $options: 'i' };
-    }
-
-    // Message type filter
-    if (messageType) {
-      filter.messageType = messageType;
-    }
-
-    // Author filter
-    if (authorId) {
-      filter.sender = authorId;
-    }
-
-    // Date range filter
-    if (dateFrom || dateTo) {
-      filter.createdAt = {};
-      if (dateFrom) filter.createdAt.$gte = new Date(dateFrom);
-      if (dateTo) filter.createdAt.$lte = new Date(dateTo);
-    }
-
-    // Execute search with pagination
-    const skip = (page - 1) * limit;
-    const messages = await Message.find(filter)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit));
-
-    // Get total count for pagination
-    const totalMessages = await Message.countDocuments(filter);
-    const totalPages = Math.ceil(totalMessages / limit);
-
-    res.json({
-      messages,
-      pagination: {
-        currentPage: parseInt(page),
-        totalPages,
-        totalMessages,
-        hasNext: page < totalPages,
-        hasPrev: page > 1
-      },
-      searchQuery: query,
-      filters: { messageType, dateFrom, dateTo, authorId }
-    });
-
-  } catch (error) {
-    console.error("Message search failed:", error);
-    res.status(500).json({ message: "Search failed" });
-  }
-};
 
 // CRITICAL FIX: Context-aware AI response customization helpers
 function generateContextAwareSystemPrompt(thread, aiContext) {
@@ -919,7 +890,6 @@ module.exports = {
   addReaction, 
   uploadFiles, 
   downloadFile, 
-  searchMessages,
   generateContextAwareSystemPrompt,
   getContextAwareTokenLimit,
   getContextAwareTemperature

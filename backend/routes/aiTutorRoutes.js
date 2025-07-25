@@ -2,10 +2,10 @@
 const express = require('express');
 const router = express.Router();
 const aiTutorController = require('../controllers/aiTutorController');
-const authMiddleware = require('../middleware/authMiddleware');
+const { verifyToken } = require('../middleware/authMiddleware');
 
 // Apply authentication middleware to all routes
-router.use(authMiddleware);
+router.use(verifyToken);
 
 // AI Tutoring endpoints
 router.post('/session', aiTutorController.startTutoringSession);

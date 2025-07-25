@@ -3,14 +3,30 @@ const errorHandler = (err, req, res, next) => {
   const timestamp = new Date().toISOString();
   const errorId = Math.random().toString(36).substr(2, 9); // Generate unique error ID
   
+  // Sanitize request body to remove sensitive information
+  const sanitizeBody = (body) => {
+    if (!body || typeof body !== 'object') return body;
+    
+    const sanitized = { ...body };
+    const sensitiveFields = ['password', 'token', 'api_key', 'secret', 'key', 'auth'];
+    
+    sensitiveFields.forEach(field => {
+      if (sanitized[field]) {
+        sanitized[field] = '[REDACTED]';
+      }
+    });
+    
+    return sanitized;
+  };
+
   console.error(`
 🚨 ERROR [${errorId}] - ${timestamp}
 📍 Route: ${req.method} ${req.originalUrl}
 👤 User: ${req.user?.email || 'Anonymous'} (${req.user?.uid || 'N/A'})
 📊 Status: ${err.status || 500}
 💬 Message: ${err.message}
-📋 Stack: ${err.stack}
-🔍 Request Body: ${JSON.stringify(req.body, null, 2)}
+📋 Stack: ${process.env.NODE_ENV === 'development' ? err.stack : '[Stack trace hidden in production]'}
+🔍 Request Body: ${JSON.stringify(sanitizeBody(req.body), null, 2)}
 🌐 IP: ${req.ip || req.connection.remoteAddress}
 🔧 User Agent: ${req.get('User-Agent') || 'Unknown'}
   `);

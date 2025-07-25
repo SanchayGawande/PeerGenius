@@ -4,8 +4,7 @@ const mongoose = require('mongoose');
 const learningAnalyticsSchema = new mongoose.Schema({
   userId: {
     type: String,
-    required: true,
-    index: true
+    required: true
   },
   
   // Time period for analytics

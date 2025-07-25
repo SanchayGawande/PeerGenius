@@ -2,10 +2,10 @@
 const express = require('express');
 const router = express.Router();
 const intelligentAssistanceController = require('../controllers/intelligentAssistanceController');
-const authMiddleware = require('../middleware/authMiddleware');
+const { verifyToken } = require('../middleware/authMiddleware');
 
 // Apply authentication middleware to all routes
-router.use(authMiddleware);
+router.use(verifyToken);
 
 // Intelligent assistance endpoints
 router.post('/code-review', intelligentAssistanceController.reviewCode);

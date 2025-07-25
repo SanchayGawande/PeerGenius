@@ -2,11 +2,11 @@
 const express = require('express');
 const router = express.Router();
 const analyticsController = require('../controllers/analyticsController');
-const authMiddleware = require('../middleware/authMiddleware');
+const { verifyToken } = require('../middleware/authMiddleware');
 const analyticsTracker = require('../services/analyticsTracker');
 
 // Apply authentication middleware to all routes
-router.use(authMiddleware);
+router.use(verifyToken);
 
 // Analytics endpoints
 router.get('/learning-profile', analyticsController.getLearningProfile);
@@ -48,7 +48,9 @@ router.post('/session/end', async (req, res) => {
       success: true,
       message: 'Session ended successfully'
     });
+    
   } catch (error) {
+
     console.error('End session error:', error);
     res.status(500).json({
       success: false,

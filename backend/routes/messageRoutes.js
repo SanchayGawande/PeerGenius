@@ -9,9 +9,8 @@ const {
   addReaction,
   uploadFiles,
   downloadFile,
-  searchMessages,
 } = require("../controllers/messageController");
-const verifyToken = require("../middleware/authMiddleware");
+const { verifyToken } = require("../middleware/authMiddleware");
 const { validateCreateMessage, validateObjectId } = require("../middleware/validation");
 const { upload } = require("../middleware/upload");
 
@@ -35,7 +34,6 @@ const messageLimiter = rateLimit({
 
 router.get("/stats", verifyToken, getMessageStats);
 router.get("/:threadId", verifyToken, validateObjectId('threadId'), getMessages);
-router.get("/:threadId/search", verifyToken, validateObjectId('threadId'), searchMessages);
 router.post("/:threadId", verifyToken, validateCreateMessage, messageLimiter, postMessage);
 router.post("/:threadId/summarize", verifyToken, validateObjectId('threadId'), aiLimiter, summarizeThread);
 router.post("/:messageId/react", verifyToken, validateObjectId('messageId'), addReaction);

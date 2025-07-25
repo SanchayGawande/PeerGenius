@@ -5,8 +5,7 @@ const userLearningProfileSchema = new mongoose.Schema({
   userId: {
     type: String,
     required: true,
-    unique: true,
-    index: true
+    unique: true
   },
   
   // Learning preferences
@@ -230,8 +229,7 @@ const userLearningProfileSchema = new mongoose.Schema({
   collection: 'user_learning_profiles'
 });
 
-// Indexes for performance
-userLearningProfileSchema.index({ userId: 1 });
+// Indexes for performance (userId already has unique index)
 userLearningProfileSchema.index({ 'learningGoals.subject': 1 });
 userLearningProfileSchema.index({ 'performanceMetrics.overallScore': -1 });
 userLearningProfileSchema.index({ 'engagementMetrics.lastActiveDate': -1 });

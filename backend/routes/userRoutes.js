@@ -7,7 +7,7 @@ const {
   getPreferences, 
   updatePreferences 
 } = require("../controllers/userController");
-const verifyToken = require("../middleware/authMiddleware");
+const { verifyToken } = require("../middleware/authMiddleware");
 const { validateUserSync, validateProfileUpdate, validatePreferencesUpdate } = require("../middleware/validation");
 const router = express.Router();
 

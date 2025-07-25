@@ -4,13 +4,11 @@ const mongoose = require('mongoose');
 const studyMaterialSchema = new mongoose.Schema({
   userId: {
     type: String,
-    required: true,
-    index: true
+    required: true
   },
   
   threadId: {
-    type: String,
-    index: true
+    type: String
   },
   
   // Material details
