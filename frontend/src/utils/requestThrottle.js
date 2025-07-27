@@ -3,14 +3,20 @@ class RequestThrottle {
   constructor() {
     this.requestCounts = new Map(); // Track requests per endpoint
     this.blockedEndpoints = new Set(); // Endpoints that are temporarily blocked
-    this.maxRequestsPerMinute = 60; // Maximum requests per endpoint per minute
-    this.blockDuration = 30000; // 30 seconds block duration
+    this.maxRequestsPerMinute = 120; // Increased to allow more requests
+    this.blockDuration = 10000; // Reduced to 10 seconds
+    this.exemptEndpoints = ['/threads/public', '/health', '/auth/check']; // Endpoints exempt from throttling
   }
 
   // Check if a request should be allowed
   shouldAllowRequest(endpoint) {
     const now = Date.now();
     const key = this.getEndpointKey(endpoint);
+    
+    // Check if this endpoint is exempt from throttling
+    if (this.exemptEndpoints.some(exempt => key.includes(exempt))) {
+      return true;
+    }
     
     // Check if endpoint is currently blocked
     if (this.blockedEndpoints.has(key)) {
@@ -111,6 +117,15 @@ class RequestThrottle {
     this.requestCounts.clear();
     this.blockedEndpoints.clear();
     console.log('🔄 Request throttle reset - all counters cleared');
+  }
+  
+  // Unblock a specific endpoint
+  unblockEndpoint(endpoint) {
+    const key = this.getEndpointKey(endpoint);
+    if (this.blockedEndpoints.has(key)) {
+      this.blockedEndpoints.delete(key);
+      console.log(`✅ Manually unblocked endpoint: ${key}`);
+    }
   }
 }
 

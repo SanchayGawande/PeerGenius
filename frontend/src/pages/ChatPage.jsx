@@ -13,7 +13,6 @@ import TypingIndicator from "../components/TypingIndicator";
 import UserTypingIndicator from "../components/UserTypingIndicator";
 import OnlineUsersIndicator from "../components/OnlineUsersIndicator";
 import FileUpload from "../components/FileUpload";
-import WhiteboardManager from "../components/WhiteboardManager";
 import MessageSearch from "../components/MessageSearch";
 import DebugPanel from "../components/DebugPanel";
 import UserAvatarDropdown from "../components/UserAvatarDropdown";
@@ -38,7 +37,7 @@ export default function ChatPage() {
   const [newMsg, setNewMsg] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const [showFileUpload, setShowFileUpload] = useState(false);
-  const [currentView, setCurrentView] = useState('chat'); // 'chat', 'whiteboards', or 'search'
+  const [currentView, setCurrentView] = useState('chat'); // 'chat' or 'search'
   const bottomRef = useRef(null);
   const typingTimeoutRef = useRef(null);
 
@@ -373,16 +372,6 @@ export default function ChatPage() {
                         💬 Chat
                       </button>
                       <button
-                        onClick={() => setCurrentView('whiteboards')}
-                        className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-                          currentView === 'whiteboards'
-                            ? 'bg-white text-slate-900 shadow-sm'
-                            : 'text-slate-600 hover:text-slate-900'
-                        }`}
-                      >
-                        🎨 Whiteboards
-                      </button>
-                      <button
                         onClick={() => setCurrentView('search')}
                         className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
                           currentView === 'search'
@@ -488,14 +477,6 @@ export default function ChatPage() {
                     )}
 
                     <div ref={bottomRef}></div>
-                  </div>
-                </>
-              ) : currentView === 'whiteboards' ? (
-                /* Whiteboard Manager */
-                <>
-                  <div className="absolute inset-0 bg-gradient-to-br from-slate-50/50 via-blue-50/30 to-purple-50/20" />
-                  <div className="relative max-w-7xl mx-auto px-8 py-8">
-                    <WhiteboardManager threadId={selectedThread._id} />
                   </div>
                 </>
               ) : (

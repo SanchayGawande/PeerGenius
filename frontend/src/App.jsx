@@ -8,7 +8,6 @@ import { MessageProvider } from "./contexts/MessageContext";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { NotificationProvider } from "./contexts/NotificationContext";
 import { SocketProvider } from "./contexts/SocketContext";
-import { WhiteboardProvider } from "./contexts/WhiteboardContext";
 import { AnalyticsProvider } from "./contexts/AnalyticsContext";
 import LoginPage from "./pages/LoginPage";
 import SignupPage from "./pages/SignupPage";
@@ -93,7 +92,6 @@ function App() {
               <SocketProvider>
                 <ThreadProvider>
                   <MessageProvider>
-                    <WhiteboardProvider>
                 <Routes>
                 {/* Landing page - shows to unauthenticated users */}
                 <Route 
@@ -204,7 +202,6 @@ function App() {
               
               {/* Toast notifications */}
               <ToastContainer />
-                    </WhiteboardProvider>
                   </MessageProvider>
                 </ThreadProvider>
               </SocketProvider>

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { useThread } from "../contexts/ThreadContext";
 import { useAuth } from "../contexts/AuthContext";
 import { useNotification } from "../contexts/NotificationContext";
-import axios from "axios";
+import axios from "../axios";
 
 export default function CreateThread() {
   const [title, setTitle] = useState("");
@@ -19,25 +19,28 @@ export default function CreateThread() {
   const { currentUser } = useAuth();
   const { showError } = useNotification();
 
-  // Load categories on component mount
+  // Load categories when user is authenticated
   useEffect(() => {
-    loadCategories();
-  }, []);
+    if (currentUser) {
+      loadCategories();
+    }
+  }, [currentUser]);
 
   const loadCategories = async () => {
     if (!currentUser) return;
     
     setIsLoadingCategories(true);
     try {
-      const response = await axios.get('/thread-categories', {
-        headers: {
-          'Authorization': `Bearer ${await currentUser.getIdToken()}`
-        }
-      });
-      setCategories(response.data.categories || []);
+      const response = await axios.get('/thread-categories');
+      console.log('Categories response:', response.data);
+      setCategories(response.data.categories || response.data || []);
     } catch (error) {
       console.error('Error loading categories:', error);
-      showError('Failed to load categories');
+      if (error.response?.status === 401) {
+        console.warn('User not authenticated for categories');
+      } else {
+        showError('Failed to load categories');
+      }
     } finally {
       setIsLoadingCategories(false);
     }

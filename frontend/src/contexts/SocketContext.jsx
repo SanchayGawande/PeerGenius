@@ -26,21 +26,27 @@ export const SocketProvider = ({ children }) => {
   isConnectedRef.current = isConnected;
 
   useEffect(() => {
-    console.log('🔌 SocketContext useEffect triggered', { 
-      currentUser: !!currentUser, 
-      userId: currentUser?.uid,
-      email: currentUser?.email 
-    });
+    if (import.meta.env.DEV) {
+      console.log('🔌 SocketContext useEffect triggered', { 
+        currentUser: !!currentUser, 
+        userId: currentUser?.uid,
+        email: currentUser?.email 
+      });
+    }
     
     if (currentUser && currentUser.uid) {
-      console.log('🔌 Connecting to Socket.IO with user:', currentUser.uid);
+      if (import.meta.env.DEV) {
+        console.log('🔌 Connecting to Socket.IO with user:', currentUser.uid);
+      }
       
       // Try connection with dynamic port detection
       const backendUrl = import.meta.env.VITE_API_URL ? 
         import.meta.env.VITE_API_URL.replace('/api', '') : 
         'http://localhost:5050';
         
-      console.log('🔌 Attempting to connect to:', backendUrl);
+      if (import.meta.env.DEV) {
+        console.log('🔌 Attempting to connect to:', backendUrl);
+      }
       
       const newSocket = io(backendUrl, {
         autoConnect: true,
@@ -87,19 +93,16 @@ export const SocketProvider = ({ children }) => {
       });
 
       newSocket.on('disconnect', (reason) => {
-        console.log('❌ Socket.IO disconnected:', reason);
+        if (import.meta.env.DEV) {
+          console.log('❌ Socket.IO disconnected:', reason);
+        }
         setIsConnected(false);
       });
 
       newSocket.on('connect_error', (error) => {
-        console.error('🚫 Socket.IO connection error:', error);
-        console.error('🚫 Error details:', {
-          message: error.message,
-          type: error.type,
-          description: error.description,
-          transport: error.transport,
-          context: error.context
-        });
+        if (import.meta.env.DEV) {
+          console.error('🚫 Socket.IO connection error:', error.message);
+        }
         
         reconnectAttempts.current++;
         
@@ -247,33 +250,6 @@ export const SocketProvider = ({ children }) => {
         }
       });
 
-      // Whiteboard events
-      newSocket.on('whiteboard-created', (data) => {
-        const { whiteboard, threadId } = data;
-        console.log(`🎨 New whiteboard created in thread ${threadId}:`, whiteboard.title);
-        
-        window.dispatchEvent(new CustomEvent('socket-whiteboard-created', {
-          detail: { whiteboard, threadId }
-        }));
-      });
-
-      newSocket.on('whiteboard-updated', (data) => {
-        const { whiteboardId, elements, action, author, threadId } = data;
-        console.log(`🎨 Whiteboard updated: ${whiteboardId} by ${author.email}`);
-        
-        window.dispatchEvent(new CustomEvent('socket-whiteboard-updated', {
-          detail: { whiteboardId, elements, action, author, threadId }
-        }));
-      });
-
-      newSocket.on('whiteboard-deleted', (data) => {
-        const { whiteboardId, threadId } = data;
-        console.log(`🎨 Whiteboard deleted: ${whiteboardId} in thread ${threadId}`);
-        
-        window.dispatchEvent(new CustomEvent('socket-whiteboard-deleted', {
-          detail: { whiteboardId, threadId }
-        }));
-      });
 
       // RACE CONDITION FIX: Proper typing indicator cleanup with userId mapping
       newSocket.on('user:stop-typing', (data) => {
@@ -561,26 +537,6 @@ export const SocketProvider = ({ children }) => {
     }
   }, []); // PERFORMANCE FIX: Empty dependency array with refs
 
-  // Whiteboard collaboration functions
-  const joinWhiteboard = useCallback((whiteboardId) => {
-    if (socketRef.current && isConnectedRef.current) {
-      socketRef.current.emit('whiteboard:join', whiteboardId);
-      console.log(`🎨 Joined whiteboard room: ${whiteboardId}`);
-    }
-  }, []); // PERFORMANCE FIX: Empty dependency array with refs
-
-  const leaveWhiteboard = useCallback((whiteboardId) => {
-    if (socketRef.current && isConnectedRef.current) {
-      socketRef.current.emit('whiteboard:leave', whiteboardId);
-      console.log(`🎨 Left whiteboard room: ${whiteboardId}`);
-    }
-  }, []); // PERFORMANCE FIX: Empty dependency array with refs
-
-  const broadcastDrawing = useCallback((whiteboardId, elements, action) => {
-    if (socketRef.current && isConnectedRef.current) {
-      socketRef.current.emit('whiteboard:drawing', { whiteboardId, elements, action });
-    }
-  }, []); // PERFORMANCE FIX: Empty dependency array with refs
 
   const value = {
     socket,
@@ -594,9 +550,6 @@ export const SocketProvider = ({ children }) => {
     updateUserStatus,
     updateThreadActivity,
     pingConnection,
-    joinWhiteboard,
-    leaveWhiteboard,
-    broadcastDrawing,
     getSocketStatus, // Debug helper
   };
 
