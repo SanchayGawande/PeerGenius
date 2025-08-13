@@ -249,6 +249,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 📞 Support
 
 If you have any questions or need help, please:
-- 📧 Email: sanchay.gawande191@gmail.com
+- 📧 Email: sanchaygawande191@gmail.com
 - 🐛 Issues: [GitHub Issues](https://github.com/SanchayGawande/PeerGenius/issues)
 - 💬 Discussions: [GitHub Discussions](https://github.com/SanchayGawande/PeerGenius/discussions)
