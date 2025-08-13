@@ -4,7 +4,6 @@
 
 PeerGenius is a modern, real-time collaborative learning platform that combines the power of AI with peer-to-peer interaction to enhance student learning experiences.
 
-![PeerGenius Demo](https://via.placeholder.com/800x400/6366f1/ffffff?text=PeerGenius+AI+Learning+Platform)
 
 ## ✨ Features
 
@@ -246,21 +245,10 @@ cd backend
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## 🙏 Acknowledgments
-
-- **Groq** - For providing fast AI inference
-- **Firebase** - For authentication and real-time database
-- **MongoDB** - For flexible document storage
-- **Socket.IO** - For real-time communication
-- **Tailwind CSS** - For beautiful, responsive design
 
 ## 📞 Support
 
 If you have any questions or need help, please:
-- 📧 Email: sanchay.gawande@example.com
+- 📧 Email: sanchay.gawande191@gmail.com
 - 🐛 Issues: [GitHub Issues](https://github.com/SanchayGawande/PeerGenius/issues)
 - 💬 Discussions: [GitHub Discussions](https://github.com/SanchayGawande/PeerGenius/discussions)
-
----
-
-**Built with ❤️ by Sanchay Gawande**
